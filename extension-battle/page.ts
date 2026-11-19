@@ -727,6 +727,7 @@ class App {
       } else line += part;
     }
     lines.push(line);
+    if (lines.length < 2) lines.push('in the folder of your clone');
     code.append(place(assets.text(lines.join('\n'), { font: 'small', color: 'std', lineHeight: 13 }), 4, 2));
     view.append(code);
     this.msgBox(view, 8, 104, 128, 48, this.notice && Date.now() - this.noticeAt < 4000 ? this.notice : `Retrying${WAIT}`);

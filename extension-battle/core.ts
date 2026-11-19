@@ -9,7 +9,7 @@ declare const cinnamon: {
 
 
 const DEFAULT_PORT = 41851;
-const START_COMMAND = '~/dev/cinnamon-themes/pokemon-emerald/helper/start.sh';
+const START_COMMAND = './helper/start.sh';
 const TEXT_MS = 22;
 const HOLD_MS = 800;
 const HP_STEP_MS = 16;

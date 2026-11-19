@@ -159,13 +159,13 @@ The order is `TRAINERS` followed by `MORE_TRAINERS` in `source/partners/build-as
 ```json
 {"type":"lobby",
  "you":{"id":"64a9604e9162c0aa","name":"May","cls":1,"palette":null,"status":"looking"},
- "peers":[{"id":"20b37a61ce1ae85c","name":"Bob","status":"looking","trainer":{"cls":5,"name":"Bob","palette":null},"address":"192.168.40.31:41852","source":"mdns"}]}
+ "peers":[{"id":"20b37a61ce1ae85c","name":"Bob","status":"looking","trainer":{"cls":5,"name":"Bob","palette":null},"address":"192.168.1.23:41852","source":"mdns"}]}
 ```
 
 `peers` is the full current list, not a delta. `address` is `host:port`, or `[v6]:port` for an IPv6 host. The list holds at most 64 trainers, and one trainer for each address. `source` is `mdns` (found by discovery) or `manual` (`add_peer`).
 A peer that stops answering for about 12 s drops out of the list.
 
-`peer_added`: `{"type":"peer_added","address":"192.168.40.31:41852"}`
+`peer_added`: `{"type":"peer_added","address":"192.168.1.23:41852"}`
 
 `pong`: `{"type":"pong","nonce":"abc"}`
 
@@ -478,7 +478,7 @@ choose        ->  simulator                  <------  choose                <- c
 ## 6. What the battle screen must show
 
 1. Helper state: not running (health check fails), connecting, connected. When it is not running, show how to
-   start it: `~/dev/cinnamon-themes/pokemon-emerald/helper/start.sh`.
+   start it: `./helper/start.sh`, run from the folder of the clone, in its own Terminal tab.
 2. Lobby: your trainer name (editable, sends `set_name`), a "Looking for a battle" toggle (`seek`), the list of
    trainers with status, a Challenge button for `idle` or `looking` peers, a "Battle the CPU" button, and an
    "Add by IP" field (`add_peer`) for networks where discovery fails.

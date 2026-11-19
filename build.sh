@@ -23,8 +23,8 @@ need git "Xcode Command Line Tools"
 need curl "part of macOS"
 need c++ "Xcode Command Line Tools: xcode-select --install"
 need python3 "Python 3"
-need pyftsubset "pip install fonttools brotli pillow"
-python3 -c "import fontTools, brotli, PIL" || { echo "missing Python packages: pip install fonttools brotli pillow" >&2; exit 1; }
+need pyftsubset "pip install fonttools==4.68.0 brotli==1.2.1 pillow==13.0.0"
+python3 -c "import fontTools, brotli, PIL" || { echo "missing Python packages: pip install fonttools==4.68.0 brotli==1.2.1 pillow==13.0.0" >&2; exit 1; }
 node -e "if (Number(process.versions.node.split('.')[0]) < 18) { console.error('Node.js 18 or later is necessary'); process.exit(1); }"
 
 step "install the helper packages"

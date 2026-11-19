@@ -1,4 +1,5 @@
-audio-sfx.css, audio-cries-1.css to audio-cries-5.css and audio-music-1.css hold, after the build, Generation III
+audio-sfx.css, audio-sfx-samples-1.css, audio-cries-1.css to audio-cries-5.css, audio-music-1.css and
+audio-music-2.css hold, after the build, Generation III
 sound data from the pret/pokeemerald decompilation, https://github.com/pret/pokeemerald (commit 9103e52): sound effect
 and music sequences converted with its mid2agb tool, voicegroup entries, key split tables, programmable wave and
 DirectSound samples converted with its wav2agb tool, m4a driver tables, and the Pokemon cries compressed with wav2agb.

@@ -15,6 +15,12 @@ fetch() {
   [ -s "$2" ] && return 0
   curl -fsSL -o "$2" "$RAW/$1"
 }
+# for a file that is not upstream for every species: HTTP 404 is fine, any other failure stops the script
+optional() {
+  [ -s "$2" ] && return 0
+  code=$(curl -sSL -o "$2" -w '%{http_code}' "$RAW/$1") || return 1
+  [ "$code" = 200 ] || { rm -f "$2"; [ "$code" = 404 ]; }
+}
 
 if [ -d "$LOCAL" ]; then
   NAMES=$(cd "$LOCAL" && for d in */; do d="${d%/}"; case "$d" in (icon_palettes|question_mark|egg) ;; (*) echo "$d" ;; esac; done)
@@ -29,11 +35,11 @@ for name in $NAMES; do
     fetch "graphics/pokemon/unown/a/anim_front.png" "$OUT/anim/unown.png"
   else
     fetch "graphics/pokemon/$name/icon.png" "$OUT/icons/$name.png"
-    fetch "graphics/pokemon/$name/front.png" "$OUT/fronts/$name.png" 2>/dev/null || true
-    fetch "graphics/pokemon/$name/anim_front.png" "$OUT/anim/$name.png" 2>/dev/null || true
+    optional "graphics/pokemon/$name/front.png" "$OUT/fronts/$name.png"
+    optional "graphics/pokemon/$name/anim_front.png" "$OUT/anim/$name.png"
   fi
-  fetch "graphics/pokemon/$name/normal.pal" "$OUT/fronts/$name.normal.pal" 2>/dev/null || true
-  fetch "graphics/pokemon/$name/shiny.pal" "$OUT/fronts/$name.shiny.pal" 2>/dev/null || true
+  optional "graphics/pokemon/$name/normal.pal" "$OUT/fronts/$name.normal.pal"
+  optional "graphics/pokemon/$name/shiny.pal" "$OUT/fronts/$name.shiny.pal"
 done
 
 R="graphics/summary_screen"

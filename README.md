@@ -4,10 +4,10 @@ A Gen 3 pixel theme and five extensions for the Claude desktop app on macOS, for
 
 ## Quick install
 
-If you have the prerequisites below, this one line clones the repository, builds the assets and installs everything:
+Install Cinnamon first (see "Install Cinnamon"), or the last step fails after the build. With Cinnamon and the other prerequisites below, this one line clones the repository, builds the assets and installs everything:
 
 ```bash
-git clone https://github.com/michaelchang-paraform/cinnamon-pokemon-emerald.git && cd cinnamon-pokemon-emerald && python3 -m venv .venv && .venv/bin/pip install fonttools brotli pillow && ./build.sh && ./install.sh
+git clone https://github.com/michaelchang-paraform/cinnamon-pokemon-emerald.git && cd cinnamon-pokemon-emerald && python3 -m venv .venv && .venv/bin/pip install fonttools==4.68.0 brotli==1.2.1 pillow==13.0.0 && ./build.sh && ./install.sh
 ```
 
 The build takes 7 to 10 minutes. It fetches the game graphics and sound onto your Mac. This repository does not contain them.
@@ -57,10 +57,10 @@ Pokemon is a trademark of Nintendo, Creatures Inc. and GAME FREAK inc. This proj
 - Cinnamon. See "Install Cinnamon".
 - The Xcode Command Line Tools, for `git` and the C++ compiler. The build compiles two sound tools from pret/pokeemerald.
 - Node.js 18 or later, with `npm`. The battle helper is tested on Node.js 26.
-- Python 3 with the `fonttools`, `brotli` and `pillow` packages. `python3` comes with the Xcode Command Line Tools. "Build the assets" installs the packages.
+- Python 3 with the `fonttools`, `brotli` and `pillow` packages. `python3` comes with the Xcode Command Line Tools. "Build the assets" installs the packages at the versions of the tested build.
 - An internet connection. The build downloads approximately 100 MB.
 - Approximately 350 MB of free disk space. The folder uses that much after the build.
-- Optional: the `claude` command (Claude Code), installed and logged in. Only battles against Claude need it.
+- Optional: the `claude` command (Claude Code), installed and logged in. Only battles against Claude need it. Use a recent version: the Claude opponent is tested with version 2.1.328. With an older version, the scripted CPU plays in place of Claude.
 - Optional: [Bun](https://bun.sh). Only the sound tests and the `sync-live.sh` developer scripts need it.
 
 To install the Xcode Command Line Tools:
@@ -126,7 +126,7 @@ Known problem: `cinnamon install` and `cinnamon update` build Cinnamon Helper ag
 4. Install the Python packages.
 
    ```bash
-   .venv/bin/pip install fonttools brotli pillow
+   .venv/bin/pip install fonttools==4.68.0 brotli==1.2.1 pillow==13.0.0
    ```
 
 5. Run the build.
@@ -334,7 +334,13 @@ cinnamon ext remove pokemon-icons --yes
 cinnamon ext remove pokemon-emerald --yes
 ```
 
-Then stop the battle helper and delete the folder of your clone. If you installed the LaunchAgent, run `./helper/launchd/uninstall.sh` before you delete the folder.
+Then stop the battle helper and delete the folder of your clone. If you installed the LaunchAgent, run `./helper/launchd/uninstall.sh` before you delete the folder. The LaunchAgent leaves its log at `~/Library/Logs/pokemon-emerald-helper.log`. You can delete that file.
+
+The Claude opponent runs in the folder `~/.pokemon-emerald`. To remove it:
+
+```bash
+rm -r ~/.pokemon-emerald
+```
 
 Cinnamon keeps the settings of a removed extension. To remove them, open `~/.config/claude-cinnamon/config.json` in a text editor. In the `"settings"` object, delete the keys `"pokemon-emerald"`, `"pokemon-icons"`, `"pokemon-partners"`, `"pokemon-audio"` and `"pokemon-battle"`.
 
@@ -461,7 +467,8 @@ To change your trainer, open Settings, then Appearance, then Pokemon partners, t
 - In the lobby, BATTLE CPU opens the OPPONENT menu. CPU starts a battle against the scripted CPU trainer.
 - CLAUDE starts a battle where Claude selects the opponent's moves. This needs the `claude` command (Claude Code), installed and logged in, on the Mac that runs the battle helper. The battle helper runs one isolated `claude -p` call for each decision. Claude sees only its own side of the battle.
 - MODEL changes the Claude model: HAIKU (the default), SONNET, OPUS or FABLE. Larger models cost more.
-- Claude battles use your Claude Code account. The battle helper stops Claude at 0.50 USD for one battle, and the scripted CPU continues the battle. One decision has a limit of 0.05 USD and 20 seconds. The helper's protocol document shows a 22 move battle on Haiku at approximately 0.02 USD. The result screen shows the cost that Claude Code estimates.
+- Claude battles use your Claude Code account. The battle helper stops Claude at 0.50 USD for one battle, and the scripted CPU continues the battle. One `claude` run has a limit of 0.05 USD. One decision has at most two runs and 20 seconds. The battle helper examines the total before each run, so a battle can pass the limit by one run. The helper's protocol document shows a 22 move battle on Haiku at approximately 0.02 USD.
+- The result screen shows the cost estimate of Claude Code and the number of moves only when `settings["pokemon-battle"].showClaudeStats` is `true`. It is off by default. The Show Claude stats box in the Pokemon battle row of Settings, then Appearance, sets it.
 - The lobby also lists the trainers that the battle helper finds on your Wi-Fi. Each trainer needs this setup and a battle helper that runs.
 - OPTIONS, then MUSIC opens the music list. AUTO lets the game select the battle music. The 12 other entries are the Emerald battle themes, from VS. WILD POKéMON to VS. RAYQUAZA. The selected track plays in your battles and in the lobby, and the correct victory music plays after a win.
 - The sound of the battle window starts muted. The speaker button in the title bar turns it on.
@@ -508,6 +515,10 @@ The sound code has tests that run with Bun after the build.
 ```bash
 bun test source/audio/test
 ```
+
+`helper/test/claude-live.js` plays one battle against the real Claude. It costs money, and `npm test` does not run it.
+
+The extensions contain some QA code that does nothing until you start it. `extension-audio/qa.ts` runs only when the `qaRun` setting changes. `extension-battle/guard.ts` examines the battle screens for text that overlaps, on request. The partners extension has debug helpers at `__pkp.debug` in the page console.
 
 ## Credits
 
