@@ -1,10 +1,13 @@
 #!/bin/sh
 # downloads the pret/pokeemerald party icons and trainer overworld sprites that build-assets.mjs needs
 # into source/partners/download/pret (personal use only, see extension-partners/SPRITES-NOTICE.txt)
-set -e
+set -eu
 cd "$(dirname "$0")"
-RAW="https://raw.githubusercontent.com/pret/pokeemerald/master"
+COMMIT="${POKEEMERALD_COMMIT:-9103e529c2fbdd7add4a1ff3350c6c1f92112c42}"
+RAW="https://raw.githubusercontent.com/pret/pokeemerald/$COMMIT"
 API="https://api.github.com/repos/pret/pokeemerald/contents"
+# the battle checkout (build.sh makes it first) already lists the species folders: no GitHub API call then
+LOCAL="../battle/download/pokeemerald/graphics/pokemon"
 OUT="download/pret"
 mkdir -p "$OUT/icons" "$OUT/people" "$OUT/fronts" "$OUT/summary" "$OUT/naming" "$OUT/types" "$OUT/src" "$OUT/battle" "$OUT/fonts" "$OUT/anim"
 
@@ -13,19 +16,24 @@ fetch() {
   curl -fsSL -o "$2" "$RAW/$1"
 }
 
-curl -fsSL "$API/graphics/pokemon" -o "$OUT/pokemon-dirs.json"
-for name in $(python3 -I -c "import json,sys; print(' '.join(x['name'] for x in json.load(open(sys.argv[1])) if x['type'] == 'dir' and x['name'] not in ('icon_palettes', 'question_mark', 'egg')))" "$OUT/pokemon-dirs.json"); do
+if [ -d "$LOCAL" ]; then
+  NAMES=$(cd "$LOCAL" && for d in */; do d="${d%/}"; case "$d" in (icon_palettes|question_mark|egg) ;; (*) echo "$d" ;; esac; done)
+else
+  curl -fsSL "$API/graphics/pokemon?ref=$COMMIT" -o "$OUT/pokemon-dirs.json"
+  NAMES=$(python3 -I -c "import json,sys; print(' '.join(x['name'] for x in json.load(open(sys.argv[1])) if x['type'] == 'dir' and x['name'] not in ('icon_palettes', 'question_mark', 'egg')))" "$OUT/pokemon-dirs.json")
+fi
+for name in $NAMES; do
   if [ "$name" = "unown" ]; then
     fetch "graphics/pokemon/unown/a/icon.png" "$OUT/icons/unown.png"
     fetch "graphics/pokemon/unown/a/front.png" "$OUT/fronts/unown.png"
     fetch "graphics/pokemon/unown/a/anim_front.png" "$OUT/anim/unown.png"
   else
     fetch "graphics/pokemon/$name/icon.png" "$OUT/icons/$name.png"
-    fetch "graphics/pokemon/$name/front.png" "$OUT/fronts/$name.png" || true
-    fetch "graphics/pokemon/$name/anim_front.png" "$OUT/anim/$name.png" || true
+    fetch "graphics/pokemon/$name/front.png" "$OUT/fronts/$name.png" 2>/dev/null || true
+    fetch "graphics/pokemon/$name/anim_front.png" "$OUT/anim/$name.png" 2>/dev/null || true
   fi
-  fetch "graphics/pokemon/$name/normal.pal" "$OUT/fronts/$name.normal.pal" || true
-  fetch "graphics/pokemon/$name/shiny.pal" "$OUT/fronts/$name.shiny.pal" || true
+  fetch "graphics/pokemon/$name/normal.pal" "$OUT/fronts/$name.normal.pal" 2>/dev/null || true
+  fetch "graphics/pokemon/$name/shiny.pal" "$OUT/fronts/$name.shiny.pal" 2>/dev/null || true
 done
 
 R="graphics/summary_screen"

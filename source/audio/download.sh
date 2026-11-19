@@ -1,11 +1,11 @@
 #!/bin/sh
 # sparse, blob-less clone of pret/pokeemerald at 9103e52 with the sound sources build-audio.mjs reads:
 # MIDI sequences, voicegroups, cries, the m4a driver and its tables, mid2agb and wav2agb (personal use only,
-# see extension-audio/AUDIO-NOTICE.txt). Nothing here is committed anywhere.
-set -e
+# see extension-audio/AUDIO-NOTICE.txt). The download folder is not in the repository.
+set -eu
 cd "$(dirname "$0")"
 DIR="download/pokeemerald"
-COMMIT=9103e529
+COMMIT="${POKEEMERALD_COMMIT:-9103e529c2fbdd7add4a1ff3350c6c1f92112c42}"
 if [ ! -d "$DIR/.git" ]; then
   mkdir -p download
   git clone --filter=blob:none --no-checkout https://github.com/pret/pokeemerald.git "$DIR"
@@ -44,7 +44,7 @@ cat > "$DIR/.git/info/sparse-checkout" <<'PATTERNS'
 /tools/wav2agb/*
 /audio_rules.mk
 PATTERNS
-git -C "$DIR" fetch --filter=blob:none --depth 1 origin "$COMMIT" 2>/dev/null || true
-git -C "$DIR" checkout -q "$(git -C "$DIR" rev-parse HEAD)"
+git -C "$DIR" fetch --filter=blob:none --depth 1 origin "$COMMIT"
+git -C "$DIR" checkout -q "$COMMIT"
 git -C "$DIR" sparse-checkout reapply
 ls "$DIR/sound/direct_sound_samples/cries" | wc -l | sed 's/^ */cries: /'

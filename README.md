@@ -1,6 +1,6 @@
 # Pokemon Emerald for Cinnamon
 
-A Gen 3 pixel theme and five extensions for the Claude desktop app on macOS. You need [Cinnamon](https://github.com/naveengovind/claude-cinnamon) to use them. Cinnamon is a tool that adds themes and extensions to the Claude app and does not change Claude.app.
+A Gen 3 pixel theme and five extensions for the Claude desktop app on macOS. You need [Cinnamon](https://github.com/naveengovind/claude-cinnamon) to use them. Cinnamon is a tool that adds themes and extensions to the Claude app. It does not change the application file of the Claude app.
 
 The theme and the extensions change these parts of the app:
 
@@ -36,13 +36,20 @@ Pokemon is a trademark of Nintendo, Creatures Inc. and GAME FREAK inc. This proj
 - [Homebrew](https://brew.sh), to install Cinnamon.
 - The Xcode Command Line Tools, for `git` and the C++ compiler. The build compiles two sound tools from pret/pokeemerald.
 - Node.js 18 or later, with `npm`. The battle helper is tested on Node.js 26.
-- Python 3 with the `fonttools`, `brotli` and `pillow` packages.
+- Python 3 with the `fonttools`, `brotli` and `pillow` packages. `python3` comes with the Xcode Command Line Tools. "Build the assets" installs the packages.
 - An internet connection. The build downloads approximately 80 MB.
+- Approximately 320 MB of free disk space. The folder uses that much after the build.
 
 To install the Xcode Command Line Tools:
 
 ```bash
 xcode-select --install
+```
+
+To install Node.js with Homebrew:
+
+```bash
+brew install node
 ```
 
 ## Install Cinnamon
@@ -105,7 +112,7 @@ Known problem: `cinnamon install` and `cinnamon update` build Cinnamon Helper ag
    ./build.sh
    ```
 
-The build takes approximately 10 minutes. Most of that time is the download of approximately 2,000 small files. It does these steps:
+The build takes 7 to 10 minutes. Most of that time is the download of approximately 2,000 small files. It does these steps:
 
 1. It installs the packages of the battle helper with `npm ci` in `helper/`.
 2. It fetches the upstream material into the `source/*/download/` folders.
@@ -114,6 +121,10 @@ The build takes approximately 10 minutes. Most of that time is the download of a
 5. It compiles the two sound tools.
 6. It writes the sprite, icon, battle, partner and sound data as CSS files in the extension folders.
 7. It makes sure that each file in each `manifest.json` exists.
+
+During the build, `npm` can print deprecation warnings and warnings about install scripts. These warnings are expected. The build is complete when the last line tells you to run `./install.sh`.
+
+All downloads from pret/pokeemerald use one pinned commit, which `build.sh` sets in `POKEEMERALD_COMMIT`.
 
 You can run `./build.sh` again. It keeps the files that it downloaded before. To download everything again, delete the `source/*/download/` folders first.
 
@@ -267,6 +278,18 @@ cinnamon ext remove pokemon-emerald --yes
 
 Then stop the battle helper and delete the folder of your clone.
 
+Cinnamon keeps the settings of a removed extension. To remove them, open `~/.config/claude-cinnamon/config.json` in a text editor. In the `"settings"` object, delete the keys `"pokemon-emerald"`, `"pokemon-icons"`, `"pokemon-partners"`, `"pokemon-audio"` and `"pokemon-battle"`.
+
+The Claude app also keeps two entries in its page storage: `pokemon-partners:v1` (reply counts and nicknames) and `pokemon-emerald-sound:v1` (sound settings). They are small and have no effect after the removal. To delete them, remove them before you remove the extensions: open the developer tools of the Claude app, go to the Console and run the two lines below.
+
+```js
+localStorage.removeItem("pokemon-partners:v1")
+```
+
+```js
+localStorage.removeItem("pokemon-emerald-sound:v1")
+```
+
 To remove Cinnamon itself, remove the login item first.
 
 ```bash
@@ -299,6 +322,7 @@ cinnamon doctor
 | The battle window does not find other trainers. | Some Wi-Fi networks block discovery. Use "Add by IP" in the battle window. Also make sure that you clicked Allow in the macOS firewall and Local Network prompts. |
 | `build.sh` stops with `missing: pyftsubset`. | The Python packages are not installed in `.venv`. Do steps 3 and 4 of "Build the assets" again. |
 | `build.sh` stops during a download. | Run it again. It continues with the files that are missing. |
+| `source/partners/download.sh` stops with a 403 error from `api.github.com`. | You ran the script alone, and GitHub limits requests that are not signed in to 60 each hour. Run `./build.sh`, which does not use that API, or wait one hour. |
 
 To see what Cinnamon Helper did when the Claude app started:
 
@@ -326,7 +350,7 @@ The `pokemon-emerald` extension reads these keys from `settings["pokemon-emerald
 | Key | Values | Default |
 | --- | --- | --- |
 | `partner` | `"mudkip"`, `"treecko"`, `"torchic"` or `"none"`. A partner that floats in the sidebar. Set it to `"none"` when you use `pokemon-partners`. | `"mudkip"` |
-| `scale` | Device pixels for each font pixel, a whole number from 1 to 12. Set it to fix the size and ignore zoom. | One step for each app zoom step, from `round(display scale * 1.2)` at 100% zoom |
+| `scale` | Device pixels for each font pixel, a whole number from 1 to 12. Set it to fix the size and ignore zoom. | At 100% app zoom, the default is `round(display scale * 1.2)`. Each app zoom step changes it by one. |
 | `textSize` | `"classic"`, `"large-chat"` (messages and the input box one font pixel step larger) or `"large"` (everything one step larger). Also in Settings, then Appearance, then Text size. | `"classic"` |
 | `groupBall` | `"poke"`, `"great"`, `"ultra"`, `"master"`, `"safari"`, `"net"`, `"dive"`, `"nest"`, `"repeat"`, `"timer"`, `"luxury"` or `"premier"`. Also in Settings, then Appearance, then Group ball. | `"poke"` |
 
@@ -341,7 +365,7 @@ Korean (Hangul) text uses the Galmuri9 pixel font on the same pixel grid as the 
 - The partner shows as a party icon on each sidebar row, next to the chat title and next to the first assistant message of each reply. While Claude responds, the icon moves faster.
 - Hover over a partner to see its healthbox. Click it to open the summary window. Drag the title bar to move the window and drag the corner to change its size.
 - In the summary window, the left and right arrow keys change the page. Return opens the name or the move data. Esc goes back and closes the window.
-- On the INFO page, Return opens the naming screen. Type on your keyboard or select keys with the arrow keys and Space. A nickname has a maximum of 10 characters. Each thread keeps its nickname.
+- On the INFO page, Return opens the naming screen in the same window. The naming screen uses Tab, Delete, Return and Esc. Type on your keyboard or select keys with the arrow keys and Space. A nickname has a maximum of 10 characters. Each thread keeps its nickname.
 - Nature, IVs, gender, ability and shininess (1 in 8192) come from the thread's seed. Stats use the Gen 3 formulas.
 - Reply counts and nicknames stay in the page's `localStorage` under `pokemon-partners:v1`. The limit is 400 threads.
 

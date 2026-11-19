@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 POKEEMERALD_COMMIT=9103e529c2fbdd7add4a1ff3350c6c1f92112c42
+export POKEEMERALD_COMMIT
 POKEAPI_COMMIT=c0542f7c51215d9672439012838c99f520596cbd
 EMERALD_FONT_URL="https://raw.githubusercontent.com/pagefaultgames/pokerogue-assets/ff5bcf907ead4032534622cf62d2c56cd7988b3e/fonts/pokemon-emerald-pro.ttf"
 GALMURI_FONT_URL="https://cdn.jsdelivr.net/npm/galmuri@2.40.3/dist/Galmuri9.ttf"

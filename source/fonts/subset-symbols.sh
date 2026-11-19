@@ -1,4 +1,5 @@
 #!/bin/sh
+set -eu
 # needs fonttools + brotli (pip install fonttools brotli)
 # gives the key symbols one font pixel of side bearing: in the symbol subset that the Emerald text falls back to,
 # and in a copy of Departure Mono for the code font and shortcut hints (DepartureMono-Regular.woff2 stays upstream)

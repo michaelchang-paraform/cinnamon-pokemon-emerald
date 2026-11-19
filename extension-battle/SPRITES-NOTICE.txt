@@ -1,5 +1,5 @@
-Battle graphics, fonts, sprite positions and screen layouts in battle-ui.css, battle-front.css, battle-back.css,
+After the build, the battle graphics, fonts, sprite positions and screen layouts in battle-ui.css, battle-front.css, battle-back.css,
 battle-icons.css and battle-data.css come from the pret/pokeemerald decompilation (https://github.com/pret/pokeemerald).
-They are copyright Nintendo, Creatures and GAME FREAK, and are bundled here for personal use only.
+They are copyright Nintendo, Creatures and GAME FREAK, and the build fetches them for personal use only. They are not in the repository.
 Three Deoxys form sprites come from the PokeAPI sprites repository (https://github.com/PokeAPI/sprites).
 Move and species tables come from the MIT-licensed pokemon-showdown package. Rebuild with source/battle/build-assets.mjs.

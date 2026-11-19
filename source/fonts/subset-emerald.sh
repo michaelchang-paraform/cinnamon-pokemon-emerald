@@ -1,4 +1,5 @@
 #!/bin/sh
+set -eu
 # needs fonttools + brotli (pip install fonttools brotli); keeps Latin, Greek, Cyrillic, punctuation and symbols
 cd "$(dirname "$0")" || exit 1
 pyftsubset download/pokemon-emerald-pro.ttf \

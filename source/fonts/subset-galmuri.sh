@@ -1,4 +1,5 @@
 #!/bin/sh
+set -eu
 # needs fonttools + brotli (pip install fonttools brotli)
 # Galmuri9 by quiple (OFL 1.1), from the galmuri npm package dist/Galmuri9.ttf, saved as download/Galmuri9.ttf
 # keeps Hangul (jamo, CJK punctuation, compatibility jamo, all 11,172 syllables) plus the arrows and keyboard symbols Emerald lacks
