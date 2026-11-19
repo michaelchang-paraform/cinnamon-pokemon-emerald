@@ -544,7 +544,7 @@ class Player {
 
   private dsNote(track: Track, tone: Tone, key: number, rhythmPan: number, priority: number): void {
     const wave = tone.rec?.s ? this.song.samples?.[tone.rec.s] : track.wave;
-    if (!wave || tone.type & 0x10) return;
+    if (!wave) return;
     const chan = this.pickDs(track, priority);
     if (!chan) return;
     chan.track?.chans.delete(chan);
@@ -892,4 +892,37 @@ function renderSong(song: SongData, tables: Tables, rate: number, scale: number)
   return r.result(true);
 }
 
-seqLib.seq = { Player, Renderer, renderSong, loopCut, highPass };
+// one PlayCryInternal call in a CRY_MODE_* (lower case), as samples plus the frame its song ran FINE
+function cryPart(wave: any, cries: any, tables: Tables, mode: string, rate: number, scale: number): { samples: Float32Array; fineFrame: number } {
+  const params = { ...cries.params, ...(cries.modes?.[mode] ?? {}) };
+  const r = renderSong(seqLib.ds.crySong(params, wave), tables, rate, scale);
+  return { samples: r.samples, fineFrame: r.fineFrame };
+}
+
+// a cry as the game's callers play it; the battle animation sound tasks (battle_anim_sound_tasks.c) frame by frame:
+// growl, roar: SoundTask_PlayDoubleCry plays *_1, waits 2 frames, then starts *_2 the frame after the first cry's
+//   song has ended (IsCryPlaying is false once FINE detaches its channel); the first cry's release overlaps
+// echo: SoundTask_PlayCryWithEcho starts ECHO_START on frame 2, checks from frame 5, stops it the frame its song
+//   has ended (StopCryAndClearCrySongs) and starts ECHO_END the next frame
+function cryClip(wave: any, cries: any, tables: Tables, mode: string, rate: number, scale: number): Float32Array {
+  if (mode !== 'growl' && mode !== 'roar' && mode !== 'echo') return cryPart(wave, cries, tables, mode, rate, scale).samples;
+  const first = cryPart(wave, cries, tables, mode === 'echo' ? 'echo_start' : `${mode}_1`, rate, scale);
+  const second = cryPart(wave, cries, tables, mode === 'echo' ? 'echo_end' : `${mode}_2`, rate, scale);
+  let start1 = 0;
+  let cut1 = Infinity;
+  let start2: number;
+  if (mode === 'echo') {
+    start1 = 2;
+    cut1 = Math.max(5, start1 + first.fineFrame + 1);
+    start2 = cut1 + 1;
+  } else start2 = Math.max(3, first.fineFrame + 1);
+  const at = (frame: number) => Math.round((frame * FRAME_TICKS * rate) / (1 << 20));
+  const len1 = Math.min(first.samples.length, Number.isFinite(cut1) ? at(cut1) - at(start1) : Infinity);
+  const out = new Float32Array(Math.max(at(start1) + len1, at(start2) + second.samples.length));
+  out.set(first.samples.subarray(0, len1), at(start1));
+  const o2 = at(start2);
+  for (let i = 0; i < second.samples.length; i++) out[o2 + i] += second.samples[i];
+  return out;
+}
+
+seqLib.seq = { Player, Renderer, renderSong, loopCut, highPass, cryClip };

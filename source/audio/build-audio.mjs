@@ -22,6 +22,8 @@ const CHECK = process.argv.includes('--check');
 export const SLICE = ['SE_SELECT', 'SE_FAILURE', 'SE_WIN_OPEN', 'SE_BALL', 'SE_EXP', 'SE_SHINY', 'SE_EXP_MAX'];
 // battle effects outside move animations: ball, damage, faint, low HP, flee and stat change
 export const BATTLE_SFX = ['SE_BALL_OPEN', 'SE_BALL_THROW', 'SE_BALL', 'SE_M_STAT_INCREASE', 'SE_M_STAT_DECREASE', 'SE_EFFECTIVE', 'SE_SUPER_EFFECTIVE', 'SE_NOT_EFFECTIVE', 'SE_FAINT', 'SE_LOW_HEALTH', 'SE_FLEE'];
+// turn-end animations the battle shows: sandstorm damage, and Wrap, Bind or Fire Spin damage (General_TurnTrap)
+export const GENERAL_ANIMS = { sandstorm: 'General_Sandstorm', trap: 'General_TurnTrap' };
 export const STATUS_ANIMS = { sleep: 'Status_Sleep', poison: 'Status_Poison', burn: 'Status_Burn', paralysis: 'Status_Paralysis', freeze: 'Status_Freeze', confusion: 'Status_Confusion' };
 
 // every SE_* an animation script reaches from `label`, following the labels it calls or jumps to
@@ -61,9 +63,10 @@ let usesCache = null;
 function sfxUses() {
   if (usesCache) return usesCache;
   const uses = {};
-  const entry = (se) => (uses[se] ??= { moves: [], status: [], battle: false });
+  const entry = (se) => (uses[se] ??= { moves: [], status: [], general: [], battle: false });
   for (const [id, label] of moveLabels()) for (const se of animSes(label)) entry(se).moves.push(id);
   for (const [name, label] of Object.entries(STATUS_ANIMS)) for (const se of animSes(label)) entry(se).status.push(name);
+  for (const [name, label] of Object.entries(GENERAL_ANIMS)) for (const se of animSes(label)) entry(se).general.push(name);
   for (const se of BATTLE_SFX) entry(se).battle = true;
   return (usesCache = uses);
 }
@@ -485,12 +488,24 @@ function buildSet(ids, kind, base, cfg, songsH) {
   return kind === 'music' ? result : { ...result, head };
 }
 
+function cryMode(sound, mode) {
+  const body = sound.match(new RegExp(`case ${mode}:([\\s\\S]*?)(?:break;|case CRY_MODE_)`))[1];
+  const out = Object.fromEntries([...body.matchAll(/\b(length|release|pitch|chorus|volume) = (\d+);/g)].map((m) => [m[1], Number(m[2])]));
+  if (/\breverse = TRUE;/.test(body)) out.reverse = true;
+  return out;
+}
+
 // cries: one wav2agb .bin per national dex number (audio_rules.mk flags), base64 in --pe-cry-<n>, packed in order
 function buildCries() {
   const names = [...read('include/constants/pokedex.h').matchAll(/^\s*NATIONAL_DEX_(\w+),/gm)].map((m) => m[1]).filter((n) => n !== 'NONE').slice(0, 386);
   const flags = read('audio_rules.mk').match(/\$\(WAV2AGB\) (-b -c[^$]*?)\$</)[1].trim().split(/\s+/);
-  const macro = read('asm/macros/music_voice.inc').match(/\.macro cry sample:req\s*\n\s*(\w+)\s+([^\n]+)/);
-  const tone = toneBytes(macro[1], macro[2].split(',').map((s) => s.trim()));
+  const macros = read('asm/macros/music_voice.inc');
+  const toneOf = (name) => {
+    const m = macros.match(new RegExp(`\\.macro ${name} sample:req\\s*\\n\\s*(\\w+)\\s+([^\\n]+)`));
+    return toneBytes(m[1], m[2].split(',').map((x) => x.trim()));
+  };
+  const tone = toneOf('cry');
+  const toneReverse = toneOf('cry_reverse');
   const sound = read('src/sound.c').match(/void PlayCryInternal[\s\S]*?\n\}/)[0];
   const def = (name) => Number(sound.match(new RegExp(`\\b${name} = (\\d+);`))[1]);
   const constant = (name) => Number(read('include/constants/sound.h').match(new RegExp(`#define ${name}\\s+(\\d+)`))[1]);
@@ -528,7 +543,9 @@ function buildCries() {
     files: files.length,
     keys,
     // PlayCryInternal defaults (CRY_MODE_NORMAL) and PlayCry_ByMode's volume and priority
-    params: { volume: constant('CRY_VOLUME'), priority: constant('CRY_PRIORITY_NORMAL'), pan: 0, pitch: def('pitch'), length: def('length'), release: def('release'), progress: 0, tone },
+    params: { volume: constant('CRY_VOLUME'), priority: constant('CRY_PRIORITY_NORMAL'), pan: 0, pitch: def('pitch'), length: def('length'), release: def('release'), chorus: def('chorus'), reverse: false, progress: 0, tone, toneReverse },
+    // what PlayCryInternal's switch changes per mode (the weak, faint, battle animation and double-battle cries)
+    modes: Object.fromEntries(['WEAK', 'FAINT', 'DOUBLES', 'HIGH_PITCH', 'ECHO_START', 'ECHO_END', 'ROAR_1', 'ROAR_2', 'GROWL_1', 'GROWL_2'].map((m) => [m.toLowerCase(), cryMode(sound, `CRY_MODE_${m}`)])),
   };
 }
 

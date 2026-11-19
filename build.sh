@@ -22,6 +22,7 @@ need npm "comes with Node.js"
 need git "Xcode Command Line Tools"
 need curl "part of macOS"
 need c++ "Xcode Command Line Tools: xcode-select --install"
+need clang "Xcode Command Line Tools: xcode-select --install"
 need python3 "Python 3"
 need pyftsubset "pip install fonttools==4.68.0 brotli==1.2.1 pillow==13.0.0"
 python3 -c "import fontTools, brotli, PIL" || { echo "missing Python packages: pip install fonttools==4.68.0 brotli==1.2.1 pillow==13.0.0" >&2; exit 1; }
@@ -53,6 +54,8 @@ graphics/party_menu/*
 graphics/text_window/*
 graphics/fonts/*
 graphics/pokemon/*/front.png
+graphics/pokemon/*/anim_front.png
+graphics/pokemon/*/*/anim_front.png
 graphics/pokemon/*/back.png
 graphics/pokemon/*/normal.pal
 graphics/pokemon/*/icon.png
@@ -64,11 +67,16 @@ graphics/pokemon/icon_palettes/*
 src/data/pokemon_graphics/*
 src/pokemon_icon.c
 src/fonts.c
+src/pokemon.c
+include/constants/species.h
 charmap.txt'
 sparse_checkout source/battle/download/pokeapi-sprites https://github.com/PokeAPI/sprites.git "$POKEAPI_COMMIT" 'sprites/pokemon/versions/generation-iii/emerald/*.png
 sprites/pokemon/versions/generation-iii/firered-leafgreen/back/*.png
 sprites/pokemon/versions/generation-iii/ruby-sapphire/back/*.png
 sprites/pokemon/versions/generation-iii/firered-leafgreen/1000[12].png'
+
+step "fetch the battle animation sources (pret/pokeemerald)"
+sh source/battle/fetch-anims.sh
 
 step "fetch the partner graphics (pret/pokeemerald)"
 sh source/partners/download.sh

@@ -31,8 +31,8 @@ The theme and the extensions change these parts of the app:
 - The app's icons, which become 1-bit pixel art.
 - Each chat thread, which gets a partner Pokemon. The partner gets EXP from Claude's work, gains levels and evolves.
 - Your messages, which show a trainer sprite that you can customize.
-- A battle window for Gen 3 random battles against the CPU, against Claude, or against a trainer on your Wi-Fi.
-- Sound effects, cries and battle music.
+- A battle window for Gen 3 random battles against the CPU, against Claude, or against a trainer on your Wi-Fi. Each Pokemon comes out of its ball with the game's animations.
+- Sound effects, cries and battle music, which the build makes from the game's sound data on your Mac.
 
 ## Game graphics and sound
 
@@ -55,7 +55,7 @@ Pokemon is a trademark of Nintendo, Creatures Inc. and GAME FREAK inc. This proj
 - The Claude desktop app.
 - [Homebrew](https://brew.sh), to install Cinnamon.
 - Cinnamon. See "Install Cinnamon".
-- The Xcode Command Line Tools, for `git` and the C++ compiler. The build compiles two sound tools from pret/pokeemerald.
+- The Xcode Command Line Tools, for `git`, the C++ compiler and `clang`. The build compiles two sound tools and one animation recorder from pret/pokeemerald code. `build.sh` stops at the start if `clang` is not there.
 - Node.js 18 or later, with `npm`. The battle helper is tested on Node.js 26.
 - Python 3 with the `fonttools`, `brotli` and `pillow` packages. `python3` comes with the Xcode Command Line Tools. "Build the assets" installs the packages at the versions of the tested build.
 - An internet connection. The build downloads approximately 100 MB.
@@ -143,8 +143,9 @@ The build takes 7 to 10 minutes. Most of that time is the download of approximat
 4. It writes `themes/pokemon-emerald.json`.
 5. It makes the list of the items that you can get in Emerald and writes the item icons.
 6. It compiles the two sound tools.
-7. It writes the sprite, icon, battle, partner and sound data as CSS files in the extension folders.
-8. It makes sure that each file in each `manifest.json` exists.
+7. It compiles the game's entrance animation code with `clang`, runs it one time to record each animation, and deletes the program.
+8. It writes the sprite, icon, battle, partner and sound data as CSS files in the extension folders.
+9. It makes sure that each file in each `manifest.json` exists.
 
 During the build, `npm` can print deprecation warnings and warnings about install scripts. These warnings are expected. The build is complete when the last line tells you to run `./install.sh`.
 
@@ -228,7 +229,10 @@ macOS can ask if `node` can accept incoming connections and use the local networ
 | `--claude-model NAME` | `haiku` | The default model: `haiku`, `sonnet`, `opus` or `fable` |
 | `--claude-timeout S` | 20 | Seconds for one decision, from 5 to 60 |
 | `--claude-battle-budget USD` | 0.5 | The cost limit for one battle |
+| `--claude-daily-budget USD` | 1 | The cost limit for all Claude battles in one local day |
 | `--service-type T` | `pkmn-emerald` | The Bonjour service type. Helpers list only trainers with the same type. |
+
+The battle helper keeps the Claude cost of the day in `~/.pokemon-emerald/claude-spend.json`. Set the `PKMN_STATE_DIR` environment variable to use a different folder.
 
 ### Run the battle helper at login (optional)
 
@@ -336,7 +340,7 @@ cinnamon ext remove pokemon-emerald --yes
 
 Then stop the battle helper and delete the folder of your clone. If you installed the LaunchAgent, run `./helper/launchd/uninstall.sh` before you delete the folder. The LaunchAgent leaves its log at `~/Library/Logs/pokemon-emerald-helper.log`. You can delete that file.
 
-The Claude opponent runs in the folder `~/.pokemon-emerald`. To remove it:
+The Claude opponent runs in the folder `~/.pokemon-emerald`. The folder also holds `claude-spend.json`, the Claude cost of the day. To remove the folder:
 
 ```bash
 rm -r ~/.pokemon-emerald
@@ -395,6 +399,7 @@ cinnamon doctor
 | An extension is on, but a part of it is missing. | Cinnamon ignores a page file larger than approximately 60 KB after compilation and a CSS file larger than approximately 785 KB. Run `./build.sh` again and make sure that it completes. |
 | `cinnamon` stops with an error about a preload or a module that it cannot find. | The current folder has a `bunfig.toml` file with a preload that breaks the command. Run `cd ~` and try again. |
 | The battle window shows BATTLE HELPER OFFLINE. | Start the battle helper with `./helper/start.sh` in its own Terminal tab. |
+| In a Claude battle, the scripted CPU continues the battle for Claude. | A cost limit stopped Claude: 0.50 USD for one battle or 1.00 USD for one day. A reply that is too slow or not valid has the same effect. See "Battle" for the limits. |
 | CLAUDE is gray in the OPPONENT menu. | The battle helper did not find the `claude` command when it started. Install Claude Code, log in, and start the battle helper again. You can also give the path with `--claude-bin`. |
 | The battle window does not find other trainers. | Some Wi-Fi networks block discovery. Use "Add by IP" in the battle window. Also make sure that you clicked Allow in the macOS firewall and Local Network prompts. |
 | There is no sound. | The sound of the battle window starts muted. Click the speaker button in the title bar of the window. |
@@ -468,8 +473,12 @@ To change your trainer, open Settings, then Appearance, then Pokemon partners, t
 - CLAUDE starts a battle where Claude selects the opponent's moves. This needs the `claude` command (Claude Code), installed and logged in, on the Mac that runs the battle helper. The battle helper runs one isolated `claude -p` call for each decision. Claude sees only its own side of the battle.
 - MODEL changes the Claude model: HAIKU (the default), SONNET, OPUS or FABLE. Larger models cost more.
 - Claude battles use your Claude Code account. The battle helper stops Claude at 0.50 USD for one battle, and the scripted CPU continues the battle. One `claude` run has a limit of 0.05 USD. One decision has at most two runs and 20 seconds. The battle helper examines the total before each run, so a battle can pass the limit by one run. The helper's protocol document shows a 22 move battle on Haiku at approximately 0.02 USD.
+- All Claude battles of one local day have a limit of 1.00 USD (`--claude-daily-budget`). After that, the scripted CPU plays for Claude until the next day. To reset the count, stop the battle helper, delete `~/.pokemon-emerald/claude-spend.json` and start the battle helper again.
+- The battle helper starts a Claude battle only for the page of the Claude app. It examines the `Origin` of the connection, which must be `https://claude.ai`. Other web pages and local programs cannot start a Claude battle, so they cannot spend your money.
 - The result screen shows the cost estimate of Claude Code and the number of moves only when `settings["pokemon-battle"].showClaudeStats` is `true`. It is off by default. The Show Claude stats box in the Pokemon battle row of Settings, then Appearance, sets it.
 - The lobby also lists the trainers that the battle helper finds on your Wi-Fi. Each trainer needs this setup and a battle helper that runs.
+- Each Pokemon has its own ball, which the battle helper selects at random from the twelve Emerald balls. The ball is thrown and opens with the game's send-out animation and particles, and then the Pokemon plays its entrance animation from the game. Set `settings["pokemon-battle"].sendOutV2` to `false` to get the short send-out.
+- The battle sounds are the game's own effects: move, hit, faint, status and menu sounds. The build fetches the sound data and makes the effects on your Mac.
 - OPTIONS, then MUSIC opens the music list. AUTO lets the game select the battle music. The 12 other entries are the Emerald battle themes, from VS. WILD POKéMON to VS. RAYQUAZA. The selected track plays in your battles and in the lobby, and the correct victory music plays after a win.
 - The sound of the battle window starts muted. The speaker button in the title bar turns it on.
 
@@ -494,7 +503,7 @@ The art is in `source/icons/glyphs.mjs` as text grids. `MATCH` connects each cod
 | `node source/sprites/build-sprites.mjs` | `extension-theme/sprites.css` |
 | `python3 source/sprites/item-list.py`, then `node source/sprites/build-items.mjs` | `source/sprites/items.json`, then `extension-theme/items.ts` and the four `items-*.css` files |
 | `node source/icons/build-icons.mjs` | `extension-icons/icons.css` |
-| `node source/battle/build-assets.mjs` | The five `extension-battle/battle-*.css` files |
+| `sh source/battle/fetch-anims.sh`, then `node source/battle/build-assets.mjs` | The eight `extension-battle/battle-*.css` files. It needs `source/sprites/download-balls.sh` first. It also writes the recording `source/battle/tools/monanim/mon-anims.json`, which Git ignores. |
 | `node source/partners/build-assets.mjs` and `build-ui.mjs` | The six `extension-partners/partners-*.css` files |
 | `node source/audio/build-audio.mjs` | The `extension-audio/audio-*.css` files: sound effects, samples, cries and music |
 

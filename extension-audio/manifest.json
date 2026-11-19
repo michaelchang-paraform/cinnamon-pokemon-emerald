@@ -2,7 +2,7 @@
   "id": "pokemon-audio",
   "name": "Pokemon Audio",
   "description": "Pokemon Emerald sound effects, cries and battle music for the Pokemon battle and summary windows, rendered from the pokeemerald sound data by a small m4a driver with its Game Boy and DirectSound channels",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "page": [
     "state.ts",
     "apu.ts",

@@ -163,6 +163,7 @@ class Battle {
 
   dispose(): void {
     this.dead = true;
+    this.sound.cancel();
     cancelLater(this.partyNoteTimer);
     this.root.remove();
   }
@@ -355,7 +356,11 @@ class Battle {
       case 'move': {
         await this.say(`${L(args[0])} used ${moveText(args[1] ?? '')}!`, 250);
         const p = parseIdent(args[0]);
-        if (p && kw.still === undefined && kw.miss === undefined) await this.lunge(this.key(p.side));
+        if (!p || kw.still !== undefined || kw.miss !== undefined || kw.notarget !== undefined) return;
+        const target = parseIdent(args[2]);
+        const lead = this.fast ? 0 : this.sound.move(args[1] ?? '', this.key(p.side), target ? this.key(target.side) : null);
+        await this.lunge(this.key(p.side));
+        if (lead > 140) await this.wait(Math.min(lead, 3000) - 140);
         return;
       }
       case '-damage':
@@ -486,14 +491,15 @@ class Battle {
       case 'win': {
         const won = args[0] === this.sides[this.mySide].trainer || args[0] === this.myName;
         this.sawWin = true;
+        this.sound.lowHp(0, 1);
         if (this.mode === 'cpu') this.app.musicOutcome = won ? 'victory' : 'silent';
         this.app.music.sync(this.app, won ? 0 : 1000);
-        if (!this.fast) this.app.sfx.play(won ? 'win' : 'lose');
         await this.say(won ? `${upper(this.myName)} defeated ${this.foeTrainer()}!` : `${upper(this.myName)} lost to ${this.foeTrainer()}!`, 1200);
         return;
       }
       case 'tie':
         this.sawWin = true;
+        this.sound.lowHp(0, 1);
         this.app.musicOutcome = 'silent';
         this.app.music.sync(this.app, 1000);
         await this.say('The battle ended in a draw!', 1200);
@@ -525,6 +531,7 @@ class Battle {
     mon.fainted = hp.status === 'fnt';
     side.mons.set(p.name, mon);
     side.active = mon;
+    if (key === 'me') this.sound.lowHp(mon.hp, mon.maxhp);
     this.boxes[key].hidden = true;
     const name = monText(p.name);
     const text = cmd === 'drag' ? `${key === 'me' ? name : `Foe ${name}`} was dragged out!` : key === 'me' ? `Go! ${name}!` : `${this.foeTrainer()} sent out ${name}!`;
@@ -554,6 +561,10 @@ class Battle {
 
   balls = new Map<string, string>();
   sawWin = false;
+  readonly sound = new ns.BattleSound(
+    () => !this.fast && !(this.app.floating && this.app.floatState().min),
+    (key: Key) => assets.mon(this.sides[key === 'me' ? this.mySide : this.foeSide].active?.species ?? '')?.n ?? null,
+  );
 
   private async sendOut(key: Key, mon: Mon): Promise<void> {
     const view = this.mons[key];
@@ -569,7 +580,7 @@ class Battle {
     }
     view.img.hidden = true;
     view.ball.style.display = '';
-    this.app.sfx.play('ball');
+    this.sound.ballOpen();
     await this.wait(260);
     view.ball.style.display = 'none';
     if (!view.img.getAttribute('src')) {
@@ -592,7 +603,7 @@ class Battle {
       view.img.hidden = true;
       return;
     }
-    this.app.sfx.play('ball');
+    this.sound.ballOpen();
     for (const scale of [0.75, 0.5, 0.25]) {
       view.img.style.transform = `scale(${scale})`;
       view.img.style.filter = 'sepia(1) saturate(6) hue-rotate(-40deg) brightness(1.2)';
@@ -618,7 +629,7 @@ class Battle {
   private async blink(key: Key): Promise<void> {
     if (this.fast) return;
     const img = this.mons[key].img;
-    this.app.sfx.play(this.effect === 'super' ? 'super' : this.effect === 'weak' ? 'weak' : 'hit');
+    this.sound.hit(key, this.effect);
     for (let i = 0; i < 4; i++) {
       img.style.visibility = 'hidden';
       await this.wait(55);
@@ -634,7 +645,7 @@ class Battle {
     const hp = parseHp(hpText);
     const active = side.active === mon;
     if (kind === 'damage' && kw.from === undefined && active) await this.blink(key);
-    if (kind === 'heal' && active && !this.fast) this.app.sfx.play('heal');
+    if (kw.from !== undefined && active && !this.fast) this.sound.effect(kw.from, key, true);
     const max = hp.max ?? mon.maxhp;
     if (active) await this.animateHp(key, mon, hp.hp, max);
     else {
@@ -674,6 +685,7 @@ class Battle {
     }
     mon.hp = toHp;
     this.renderBox(key);
+    if (key === 'me') this.sound.lowHp(toHp, toMax);
   }
 
   private paintBar(key: Key, px: number, hp: number, max: number): void {
@@ -762,7 +774,7 @@ class Battle {
       const mon = p ? this.sides[p.side].mons.get(p.name) : null;
       if (mon) mon.status = '';
     }
-    if (start && !this.fast) this.app.sfx.play('status');
+    if (start && !this.fast && found) this.sound.status(found.key, s);
     if (start && kw.from === 'move: Rest') return this.say(`${L} slept and became healthy!`);
     if (!start && kw.silent !== undefined) return;
     await this.say(statusLine(start, s, L));
@@ -772,7 +784,8 @@ class Battle {
     const L = this.label(args[0]);
     const stat = STAT_NAMES[args[1]] ?? upper(args[1] ?? '');
     const n = Number(args[2]);
-    if (!this.fast && n) this.app.sfx.play(up ? 'up' : 'down');
+    const p = parseIdent(args[0]);
+    if (!this.fast && n && p) this.sound.stat(this.key(p.side), up);
     if (kw.from === 'ability: Intimidate' && kw.of) {
       await this.say(`${this.label(kw.of)}'s INTIMIDATE cuts ${L}'s ${stat}!`);
       return;
@@ -786,6 +799,7 @@ class Battle {
   private async weatherChange(weather: string | undefined, kw: Record<string, string>): Promise<void> {
     const w = weather ?? 'none';
     if (kw.upkeep !== undefined) {
+      if (!this.fast) this.sound.weather(w, 'me');
       this.weatherEl.dataset.weather = w;
       await this.say(WEATHER_UPKEEP[w] ?? '');
       return;
@@ -801,11 +815,18 @@ class Battle {
     this.weather = w;
     this.weatherEl.dataset.weather = w;
     this.app.renderBar();
+    const by = parseIdent(kw.of);
+    if (kw.from?.startsWith('ability:') && by && !this.fast) this.sound.weather(w, this.key(by.side));
     if (kw.from?.startsWith('ability:') && kw.of) await this.say(`${this.label(kw.of)}'s ${upper(effectName(kw.from))} ${WEATHER_ABILITY[w] ?? ''}`);
     else await this.say(WEATHER_START[w] ?? '');
   }
 
   private async cant(args: string[]): Promise<void> {
+    const p = parseIdent(args[0]);
+    if (p && !this.fast) {
+      if (['slp', 'frz', 'par'].includes(args[1] ?? '')) this.sound.status(this.key(p.side), args[1]);
+      else this.sound.effect(args[1], this.key(p.side), false);
+    }
     await this.say(cantLine(this.label(args[0]), effectName(args[1]), upper(effectName(args[2]))));
   }
 
@@ -817,8 +838,14 @@ class Battle {
     mon.hp = 0;
     mon.status = '';
     const view = this.mons[key];
+    if (key === 'me') this.sound.lowHp(0, 1);
     if (side.active === mon && !this.fast) {
-      this.app.sfx.play('faint');
+      const dex = assets.mon(mon.species)?.n;
+      if (dex) {
+        this.sound.cry(dex, key, 'faint');
+        await this.wait(600);
+      }
+      this.sound.faint(key);
       for (let i = 1; i <= 8; i++) {
         view.img.style.transform = `translateY(calc(var(--u) * ${i * 8}))`;
         await this.wait(28);
@@ -836,6 +863,11 @@ class Battle {
   }
 
   private async effectText(cmd: string, args: string[], kw: Record<string, string>): Promise<void> {
+    const p = parseIdent(args[0]);
+    if (p && !this.fast) {
+      if (cmd === '-prepare') this.sound.move(args[1] ?? '', this.key(p.side), parseIdent(args[2]) ? this.key(parseIdent(args[2])!.side) : null, true);
+      else if (cmd === '-start' || cmd === '-activate') this.sound.effect(args[1], this.key(p.side), false);
+    }
     await this.say(effectLine(cmd, args, kw, this.label(args[0]), kw.of ? this.label(kw.of) : 'the foe'));
   }
 
@@ -1060,11 +1092,12 @@ class Battle {
   private lastChoice: Record<string, unknown> | null = null;
   private foeThinking = false;
   private fallbackNote = false;
+  private fallbackReason = '';
 
   private waitText(): string {
     if (this.fallbackNote) {
       this.fallbackNote = false;
-      return String(ns.CLAUDE_FALLBACK ?? 'The CPU takes over.');
+      return String(ns.CLAUDE_FALLBACK_TEXT?.[this.fallbackReason] ?? ns.CLAUDE_FALLBACK ?? 'The CPU takes over.');
     }
     if (this.foeThinking) return `${this.foeTrainer()} is thinking${WAIT}`;
     return this.mode === 'lan' ? `Communicating${WAIT}\nPlease wait.` : '';
@@ -1075,8 +1108,9 @@ class Battle {
     if (this.menuState === 'wait' && !this.running) this.setText(this.waitText());
   }
 
-  fallback(): void {
+  fallback(reason = ''): void {
     this.fallbackNote = true;
+    this.fallbackReason = reason;
     this.foeThinking = false;
     if (this.menuState === 'wait' && !this.running) this.setText(this.waitText());
   }

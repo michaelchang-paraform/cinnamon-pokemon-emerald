@@ -213,7 +213,7 @@ function placeLauncher(app: any): void {
   }
   const panes = topRects(LAUNCH_SELECTOR);
   let spot: [number, number, number, number] | null = null;
-  // one step under the largest fit leaves visible headroom (the full fit was too large)
+  // one step under the largest fit leaves visible headroom; the full fit reads too large
   for (let k = Math.max(1, Math.floor(((head - 2 * pad) * dpr) / h) - 1); k >= 1 && !spot; k--) {
     const bw = (w * k) / dpr + 2 * pad;
     const bh = (h * k) / dpr + 2 * pad;

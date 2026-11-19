@@ -5,6 +5,7 @@ const { WebSocket, WebSocketServer } = require('ws');
 const { BattleSession, BALLS } = require('./battle');
 const { SmartAI } = require('./ai');
 const { ClaudeAI, MODELS, probeClaude } = require('./claude/seat');
+const { DailySpend } = require('./claude/spend');
 const { Lan, LAN_PROTOCOL, isPeerMessage } = require('./lan');
 const { Dex } = require('pokemon-showdown');
 const { makeId, sanitizeName, sanitizeLook, TRAINER_CLASS_COUNT, isId, isChoice, isFormat: isFormatId, isPlainObject, parseJson, RateLimiter, NAME_MAX, log } = require('./util');
@@ -49,6 +50,7 @@ class Helper {
   }
 
   async start() {
+    this.dailySpend = new DailySpend({ stateDir: this.config.stateDir, limitUsd: this.config.claudeDailyBudgetUsd });
     this.claude = await probeClaude(this.config.claudeBin);
     await this.startPageApi();
     if (this.config.lan) {
@@ -110,7 +112,7 @@ class Helper {
         socket.destroy();
         return;
       }
-      wss.handleUpgrade(req, socket, head, (ws) => this.onPage(ws));
+      wss.handleUpgrade(req, socket, head, (ws) => this.onPage(ws, origin));
     });
     this.pageServer = server;
     this.pageWss = wss;
@@ -127,8 +129,9 @@ class Helper {
     return this.config.allowedOrigins.includes(origin);
   }
 
-  onPage(ws) {
-    const page = { ws, limiter: new RateLimiter({ perSecond: 200, burst: 400 }), greeted: false };
+  onPage(ws, origin) {
+    log(`[page] connected, origin ${origin || 'none'}`);
+    const page = { ws, origin: origin || null, limiter: new RateLimiter({ perSecond: 200, burst: 400 }), greeted: false };
     this.pages.add(page);
     ws.on('message', (data, isBinary) => {
       if (isBinary || !page.limiter.take()) return this.toPage(page, { type: 'error', code: 'rate_limited', message: 'Too many messages' });
@@ -610,6 +613,7 @@ class Helper {
     if (opponentKind !== 'claude' && opponentKind !== 'cpu') return this.fail(page, 'start_cpu', 'bad_value', 'opponent must be "cpu" or "claude"');
     const model = msg.model === undefined ? this.config.claudeModel : msg.model;
     if (opponentKind === 'claude') {
+      if (!page.origin || !this.originAllowed(page.origin)) return this.fail(page, 'start_cpu', 'claude_origin', 'Claude battles start only from the Claude app page');
       if (!MODELS.includes(model)) return this.fail(page, 'start_cpu', 'bad_value', `model must be one of ${MODELS.join(', ')}`);
       if (!this.claude.available) return this.fail(page, 'start_cpu', 'claude_unavailable', 'Claude Code was not found when the helper started');
     }
@@ -627,6 +631,7 @@ class Helper {
           timeoutMs: this.config.claudeTimeoutSeconds * 1000,
           runBudgetUsd: 0.05,
           battleBudgetUsd: this.config.claudeBattleBudgetUsd,
+          dailySpend: this.dailySpend,
           onThinking: (thinking) => this.broadcast({ type: 'opponent_thinking', battleId: session.id, thinking }),
           onFallback: (reason) => this.broadcast({ type: 'opponent_fallback', battleId: session.id, reason }),
           onDecision: (d) => log(`[claude] ${d.ok ? d.action : `fallback (${d.reason})`} in ${d.ms}ms`),

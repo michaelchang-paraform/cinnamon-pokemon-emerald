@@ -458,16 +458,22 @@ function testDnsSdCaps() {
 
 const FAKE = path.join(__dirname, 'fake-claude.js');
 
-async function claudeStubBattle({ port, mode, extra = [], forfeitAfterFallback = false }) {
+function stateDirWith(spend) {
+  const dir = require('fs').mkdtempSync(path.join(require('os').tmpdir(), 'pkmn-state-'));
+  if (spend !== undefined) require('fs').writeFileSync(path.join(dir, 'claude-spend.json'), JSON.stringify({ day: require('../src/claude/spend').localDay(), usd: spend }));
+  return dir;
+}
+
+async function claudeStubBattle({ port, mode, extra = [], forfeitAfterFallback = false, stateDir = stateDirWith() }) {
   const dump = path.join(require('os').tmpdir(), `pkmn-fake-claude-${process.pid}-${mode}.txt`);
   try {
     require('fs').unlinkSync(dump);
   } catch {
     // none yet
   }
-  startHelper(`claude-${mode}`, ['--no-lan', '--port', String(port), '--claude-bin', FAKE, ...extra], { FAKE_CLAUDE_MODE: mode, FAKE_CLAUDE_DUMP: dump });
+  startHelper(`claude-${mode}`, ['--no-lan', '--port', String(port), '--claude-bin', FAKE, ...extra], { FAKE_CLAUDE_MODE: mode, FAKE_CLAUDE_DUMP: dump, PKMN_STATE_DIR: stateDir });
   await waitForHealth(port);
-  const c = new Client(port);
+  const c = new Client(port, { origin: 'https://claude.ai' });
   await c.open();
   c.send({ type: 'hello', protocol: 1 });
   const welcome = await c.waitFor((m) => m.type === 'welcome', 5000, 'welcome');
@@ -488,16 +494,45 @@ async function claudeStubBattle({ port, mode, extra = [], forfeitAfterFallback =
   } catch {
     // no prompt written
   }
-  return { welcome, start, end, messages: c.messages, prompts };
+  let spend = null;
+  try {
+    spend = JSON.parse(require('fs').readFileSync(path.join(stateDir, 'claude-spend.json'), 'utf8'));
+  } catch {
+    // no spend written
+  }
+  require('fs').rmSync(stateDir, { recursive: true, force: true });
+  return { welcome, start, end, messages: c.messages, prompts, spend };
 }
 
 async function testClaudeStub() {
-  const [legal, retry, illegal, sleepy] = await Promise.all([
+  const originCheck = (async () => {
+    startHelper('claude-origin', ['--no-lan', '--port', '41958', '--claude-bin', FAKE], { PKMN_STATE_DIR: stateDirWith() });
+    await waitForHealth(41958);
+    const c = new Client(41958);
+    await c.open();
+    c.send({ type: 'hello', protocol: 1 });
+    c.send({ type: 'start_cpu', opponent: 'claude' });
+    const err = await c.waitFor((m) => m.type === 'error' && m.re === 'start_cpu', 5000, 'claude_origin error');
+    c.send({ type: 'start_cpu' });
+    const cpuStart = await c.waitFor((m) => m.type === 'battle_start', 5000, 'no-origin cpu start');
+    c.send({ type: 'forfeit', battleId: cpuStart.battleId });
+    await c.waitFor((m) => m.type === 'battle_end', 5000, 'no-origin cpu end');
+    c.close();
+    return { err, cpuStart };
+  })();
+  const [legal, retry, illegal, sleepy, daily, origin] = await Promise.all([
     claudeStubBattle({ port: 41953, mode: 'legal' }),
     claudeStubBattle({ port: 41954, mode: 'retry' }),
     claudeStubBattle({ port: 41955, mode: 'illegal' }),
     claudeStubBattle({ port: 41956, mode: 'sleep', extra: ['--claude-timeout', '5'], forfeitAfterFallback: true }),
+    claudeStubBattle({ port: 41959, mode: 'legal', forfeitAfterFallback: true, stateDir: stateDirWith(1.0) }),
+    originCheck,
   ]);
+  check('Claude battles need the app page Origin', origin.err.code === 'claude_origin', origin.err.code);
+  check('a connection with no Origin can still play the scripted CPU', origin.cpuStart.opponent.kind === 'cpu');
+  const dailyFallback = daily.messages.find((m) => m.type === 'opponent_fallback');
+  check('daily budget reached: scripted CPU takes over', dailyFallback && dailyFallback.reason === 'daily_budget' && daily.end.opponentStats.claudeDecisions === 0, JSON.stringify(dailyFallback));
+  check('Claude spend is added to the daily state file', legal.spend && legal.spend.usd > 0.002 && legal.spend.day === require('../src/claude/spend').localDay(), JSON.stringify(legal.spend));
   check('welcome reports Claude availability', legal.welcome.claude.available && legal.welcome.claude.version === '9.9.9', JSON.stringify(legal.welcome.claude));
   check('claude battle_start names the opponent', legal.start.opponent.kind === 'claude' && legal.start.opponent.model === 'haiku' && legal.start.opponent.name === 'CLAUDE');
   const ls = legal.end.opponentStats;

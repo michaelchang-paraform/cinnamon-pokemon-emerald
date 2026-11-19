@@ -70,7 +70,7 @@ function probeClaude(bin) {
  * Sees only the p2 stream. Falls back to SmartAI on a bad reply (after one retry), timeout, error or budget.
  */
 class ClaudeAI extends SmartAI {
-  constructor({ side, format, write, model, bin, timeoutMs, runBudgetUsd, battleBudgetUsd, onThinking, onFallback, onDecision }) {
+  constructor({ side, format, write, model, bin, timeoutMs, runBudgetUsd, battleBudgetUsd, dailySpend, onThinking, onFallback, onDecision }) {
     super({ side, format, write, difficulty: 'smart' });
     this.view = new BattleView({ side, format });
     this.model = model;
@@ -78,6 +78,7 @@ class ClaudeAI extends SmartAI {
     this.timeoutMs = timeoutMs;
     this.runBudgetUsd = runBudgetUsd;
     this.battleBudgetUsd = battleBudgetUsd;
+    this.dailySpend = dailySpend;
     this.onThinking = onThinking;
     this.onFallback = onFallback;
     this.onDecision = onDecision;
@@ -153,6 +154,10 @@ class ClaudeAI extends SmartAI {
 
   /** One claude -p run. Resolves { ok, action } or { ok: false, reason, timedOut }. */
   run({ prompt, ids, deadline }) {
+    if (this.dailySpend && this.dailySpend.reached()) {
+      this.handOver('daily_budget');
+      return Promise.resolve({ ok: false, reason: 'daily_budget' });
+    }
     if (this.stats.costUsd >= this.battleBudgetUsd) {
       this.handOver('budget');
       return Promise.resolve({ ok: false, reason: 'budget' });
@@ -209,7 +214,10 @@ class ClaudeAI extends SmartAI {
   }
 
   account(json) {
-    if (typeof json.total_cost_usd === 'number') this.stats.costUsd += json.total_cost_usd;
+    if (typeof json.total_cost_usd === 'number') {
+      this.stats.costUsd += json.total_cost_usd;
+      if (this.dailySpend) this.dailySpend.add(json.total_cost_usd);
+    }
     const usage = json.usage || {};
     this.stats.inputTokens += (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
     this.stats.cacheTokens += usage.cache_read_input_tokens || 0;

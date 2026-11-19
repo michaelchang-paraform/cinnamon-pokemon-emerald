@@ -21,6 +21,8 @@ function trackList(): Track[] {
 class BattleMusic {
   private previewId: string | null | undefined = undefined;
   private last: string | null = null;
+  // what the audio extension has rendered for this window since its last free
+  private rendered = new Set<string>();
 
   pick(): Track | null {
     const id = String(cinnamon.settings.get('musicPick') ?? '');
@@ -33,7 +35,9 @@ class BattleMusic {
 
   prepare(): void {
     try {
-      void Promise.resolve(audio()?.prepareMusic?.((this.pick() ?? DEFAULT_TRACK).id, { window: 'battle' })).catch(() => {});
+      const id = (this.pick() ?? DEFAULT_TRACK).id;
+      this.rendered.add(id);
+      void Promise.resolve(audio()?.prepareMusic?.(id, { window: 'battle' })).catch(() => {});
     } catch {}
   }
 
@@ -72,6 +76,7 @@ class BattleMusic {
   }
 
   sync(app: any, fadeMs = 500): void {
+    app.battle?.sound?.sync();
     if (!app.open || app.screen !== 'lobby' || app.panel !== 'music') this.previewId = undefined;
     const want = this.desired(app);
     const have = this.holding();
@@ -79,8 +84,18 @@ class BattleMusic {
     if (want !== this.ended) this.ended = null;
     if (want === have || (want && want === this.ended)) return;
     try {
-      if (want) audio()?.music?.(want, { window: 'battle' });
-      else audio()?.stopMusic?.({ window: 'battle', fadeMs: app.open ? fadeMs : 0, free: !app.open });
+      if (want) {
+        this.rendered.add(want);
+        audio()?.music?.(want, { window: 'battle' });
+        return;
+      }
+      // a close frees only when more than the playing track is rendered, and renders that one again for the reopen
+      const free = !app.open && this.rendered.size > 1;
+      audio()?.stopMusic?.({ window: 'battle', fadeMs: app.open ? fadeMs : 0, free });
+      if (free && have) {
+        this.rendered = new Set([have]);
+        void Promise.resolve(audio()?.prepareMusic?.(have, { window: 'battle' })).catch(() => {});
+      }
     } catch {}
   }
 

@@ -6,7 +6,7 @@ declare const cinnamon: { onDispose(fn: () => void): void };
 
 // pan -1 (left) to 1 (right), as m4aMPlayPanpotControl's -64..63; pitch in semitones, as m4aMPlayPitchControl's
 // 1/256-semitone steps
-type PlayOptions = { window?: string; pan?: number; pitch?: number };
+type PlayOptions = { window?: string; pan?: number; pitch?: number; mode?: string };
 // windows with a mute toggle in the shared state: battle, summary, and chat (partners' cry on a finished reply)
 const WINDOWS = new Set(['battle', 'summary', 'chat']);
 function windowName(win: unknown, fallback: string): string {
@@ -16,7 +16,7 @@ type PlayRecord = { id: string; window: string; gain: number; at: number; played
 
 const pageLib = (window as any).__peaLib;
 const { SOUND_KEY, SOUND_EVENT, readSound, gainFor } = pageLib.state;
-const { renderSong, Renderer, loopCut } = pageLib.seq;
+const { renderSong, Renderer, loopCut, cryClip } = pageLib.seq;
 const { Wave, crySong } = pageLib.ds;
 const RATE = 48000;
 // one CGB volume step; a full-volume square reads ±0.5 before the window gain
@@ -30,8 +30,8 @@ type Clip = { samples: Float32Array; loopStart?: number; loopEnd?: number };
 const rendered = new Map<string, Clip>();
 const log: PlayRecord[] = [];
 const sfxWaves: Record<string, unknown> = {};
-let data: { tables: any; songs: Record<string, unknown>; sfx?: any; cries?: { files: number; keys: Record<string, number>; params: any } } | null = null;
-const cries = new Map<number, Clip>();
+let data: { tables: any; songs: Record<string, unknown>; sfx?: any; cries?: { files: number; keys: Record<string, number>; params: any; modes?: Record<string, any> } } | null = null;
+const cries = new Map<string, Clip>();
 let ctx: AudioContext | null = null;
 const gains = new Map<string, GainNode>();
 const live = new Map<string, AudioBufferSourceNode>();
@@ -238,14 +238,18 @@ function readCry(dex: number): Uint8Array | null {
   return raw ? Uint8Array.from(atob(raw), (c) => c.charCodeAt(0)) : null;
 }
 
-function renderCry(dex: number): Clip | null {
-  let clip = cries.get(dex);
+const CRY_MODES = new Set(['normal', 'weak', 'faint', 'doubles', 'high_pitch', 'growl', 'roar', 'echo']);
+
+// mode: 'normal', 'weak' (status or HP bar yellow or red), 'faint', 'doubles' (double-battle send-out),
+// 'high_pitch' (PlayCryHighPitch), 'growl' and 'roar' (PlayDoubleCry) or 'echo' (PlayCryWithEcho)
+function renderCry(dex: number, mode = 'normal'): Clip | null {
+  const key = `${dex}:${mode}`;
+  let clip = cries.get(key);
   if (clip) return clip;
   const bin = data?.cries ? readCry(dex) : null;
   if (!bin) return null;
-  const song = crySong(data!.cries!.params, new Wave(bin, data!.tables.delta));
-  clip = { samples: renderSong(song, data!.tables, RATE, STEP).samples as Float32Array };
-  cries.set(dex, clip);
+  clip = { samples: cryClip(new Wave(bin, data!.tables.delta), data!.cries!, data!.tables, mode, RATE, STEP) };
+  cries.set(key, clip);
   return clip;
 }
 
@@ -257,9 +261,13 @@ function cry(species: number | string, opts: PlayOptions = {}): boolean {
   if (disposed || entry.gain <= 0 || !dex) return false;
   try {
     if (!context()) return false;
-    const clip = renderCry(dex);
-    entry.played = start(clip, win, `${win}:cry`);
-    if (entry.played && clip) for (const fn of cryListeners) fn(win, clip.samples.length / RATE);
+    const asked = opts.mode === 'double' ? 'doubles' : String(opts.mode ?? 'normal');
+    const mode = CRY_MODES.has(asked) ? asked : 'normal';
+    const clip = renderCry(dex, mode);
+    // the game pans the release and faint cries to -25 (player side) or +25 (foe side) of -64..63
+    entry.played = start(clip, win, `${win}:cry`, opts.pan);
+    // PlayCry_ByMode ducks the music except in CRY_MODE_DOUBLES
+    if (entry.played && clip && mode !== 'doubles') for (const fn of cryListeners) fn(win, clip.samples.length / RATE);
     return entry.played;
   } catch {
     return false;
@@ -326,7 +334,7 @@ const api = {
   sfxList: () =>
     Object.keys(data?.songs ?? {}).map((id) => {
       const use = data?.sfx?.uses?.[id];
-      return { id, moves: [...(use?.moves ?? [])], status: [...(use?.status ?? [])], battle: !!use?.battle, interface: (data?.sfx?.interface ?? []).includes(id) };
+      return { id, moves: [...(use?.moves ?? [])], status: [...(use?.status ?? [])], general: [...(use?.general ?? [])], battle: !!use?.battle, interface: (data?.sfx?.interface ?? []).includes(id) };
     }),
   // the gain a play() for this window uses right now: master volume, or 0 while muted
   gain: (win: string) => gainFor(state, win),

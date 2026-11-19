@@ -85,7 +85,7 @@ class Assets {
       const data = read('--pkb-data');
       const ui = read('--pkb-ui');
       if (!data || !ui) return false;
-      for (const kind of ['f', 'b', 'i']) {
+      for (const kind of ['f', 'b', 'i', 'a']) {
         const blob = read(`--pkb-sprites-${kind}`);
         if (blob) this.bytes[kind] = decodeBase64(blob);
       }
@@ -165,7 +165,7 @@ class Assets {
     return all[base] ? base : null;
   }
 
-  sprite(species: string, kind: 'f' | 'b' | 'i'): string | null {
+  sprite(species: string, kind: 'f' | 'b' | 'i' | 'a'): string | null {
     if (!this.data) this.load();
     const id = this.monId(species);
     if (!id || !this.data) return null;

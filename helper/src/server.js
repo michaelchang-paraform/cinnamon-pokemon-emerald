@@ -20,6 +20,8 @@ const DEFAULTS = {
   claudeModel: 'haiku',
   claudeTimeoutSeconds: 20,
   claudeBattleBudgetUsd: 0.5,
+  claudeDailyBudgetUsd: 1,
+  stateDir: undefined,
   allowedOrigins: ['https://claude.ai'],
   peers: [],
 };
@@ -37,6 +39,7 @@ function parseArgs(argv, env) {
   if (env.PKMN_FORMAT) config.format = env.PKMN_FORMAT;
   if (env.PKMN_ALLOWED_ORIGINS) config.allowedOrigins = env.PKMN_ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean);
   if (env.PKMN_DISCOVERY) config.discovery = oneOf(env.PKMN_DISCOVERY, ['auto', 'dnssd', 'mdns', 'off'], 'PKMN_DISCOVERY');
+  if (env.PKMN_STATE_DIR) config.stateDir = env.PKMN_STATE_DIR;
   if (env.PKMN_SERVICE_TYPE) config.serviceType = serviceType(env.PKMN_SERVICE_TYPE);
   if (env.PKMN_PEERS) config.peers = parsePeers(env.PKMN_PEERS, config.lanPort);
   for (let i = 0; i < argv.length; i += 1) {
@@ -60,6 +63,7 @@ function parseArgs(argv, env) {
     else if (arg === '--claude-bin') config.claudeBin = next();
     else if (arg === '--claude-model') config.claudeModel = oneOf(next(), ['haiku', 'sonnet', 'opus', 'fable'], arg);
     else if (arg === '--claude-timeout') config.claudeTimeoutSeconds = range(num(next(), arg), 5, 60, arg);
+    else if (arg === '--claude-daily-budget') config.claudeDailyBudgetUsd = budget(next(), arg);
     else if (arg === '--claude-battle-budget') config.claudeBattleBudgetUsd = budget(next(), arg);
     else if (arg === '--service-type') config.serviceType = serviceType(next());
     else if (arg === '--challenge-cooldown') config.challengeCooldownSeconds = num(next(), arg);
@@ -67,7 +71,7 @@ function parseArgs(argv, env) {
     else if (arg === '--help' || arg === '-h') {
       console.log('usage: start.sh [--port 41851] [--lan-port 41852] [--lan-host 0.0.0.0] [--name NAME] [--format gen3randombattle]\n'
         + '                [--no-lan] [--discovery auto|dnssd|mdns|off] [--no-mdns] [--peer host:port] [--lan-timer 150] [--cpu-timer 0] [--challenge-cooldown 15] [--service-type pkmn-emerald]\n'
-        + '                [--claude-bin claude] [--claude-model haiku|sonnet|opus|fable] [--claude-timeout 20] [--claude-battle-budget 0.5] [--allow-origin URL]');
+        + '                [--claude-bin claude] [--claude-model haiku|sonnet|opus|fable] [--claude-timeout 20] [--claude-battle-budget 0.5] [--claude-daily-budget 1] [--allow-origin URL]');
       process.exit(0);
     } else throw new Error(`unknown argument ${arg}`);
   }

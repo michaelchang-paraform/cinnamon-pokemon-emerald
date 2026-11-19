@@ -5,6 +5,8 @@ const ns = (window as any).__pkb;
 const CLAUDE_MODELS = ['haiku', 'sonnet', 'opus', 'fable'];
 const CLAUDE_LOOK = { cls: 'psychic', name: 'CLAUDE', palette: [] };
 const CLAUDE_FALLBACK = 'CLAUDE is out. The CPU takes over.';
+const CLAUDE_FALLBACK_TEXT: Record<string, string> = { daily_budget: 'CLAUDE is out for today.\nThe CPU takes over.' };
+const CLAUDE_ORIGIN = 'CLAUDE can only be started from the Claude app.';
 const CLAUDE_REASONS: Record<string, string> = {
   old_helper: 'Restart the battle helper to battle CLAUDE.',
   not_found: 'Claude Code was not found on this Mac.',
@@ -64,4 +66,4 @@ function opponentMenu(app: any, info: ClaudeInfo): { items: any[]; hints: string
   };
 }
 
-Object.assign(ns, { CLAUDE_LOOK, CLAUDE_FALLBACK, parseClaude, claudeModel, claudeStats, opponentMenu });
+Object.assign(ns, { CLAUDE_LOOK, CLAUDE_FALLBACK, CLAUDE_FALLBACK_TEXT, CLAUDE_ORIGIN, parseClaude, claudeModel, claudeStats, opponentMenu });

@@ -188,8 +188,10 @@ function dsFrame(chans: DsChan[], right: Int8Array, left: Int8Array): void {
     const volL = (c.leftVolume * v) >> 8;
     const wave = c.wave;
     const step = c.type & 0x08 ? 0x800000 : DIV_FREQ * c.frequency;
-    let s0 = wave.at(c.pos);
-    let s1 = wave.at(c.pos + 1);
+    // TONEDATA_TYPE_REV: the sample plays from its end back to its start
+    const at = c.type & 0x10 ? (p: number) => wave.at(wave.size - 1 - p) : (p: number) => wave.at(p);
+    let s0 = at(c.pos);
+    let s1 = at(c.pos + 1);
     for (let i = 0; i < DS_SAMPLES; i++) {
       const s = s0 + Math.floor((c.fw * (s1 - s0)) / 0x800000);
       right[i] += (volR * s) >> 8;
@@ -207,19 +209,21 @@ function dsFrame(chans: DsChan[], right: Int8Array, left: Int8Array): void {
         while (c.count <= 0) c.count += wave.size - wave.loopStart;
         c.pos = wave.loopStart + (wave.size - wave.loopStart - c.count);
       } else c.pos += adv;
-      s0 = wave.at(c.pos);
-      s1 = wave.at(c.pos + 1);
+      s0 = at(c.pos);
+      s1 = at(c.pos + 1);
     }
   }
 }
 
 // gPokemonCrySongTemplate from offset 0x11 (part0) after SetPokemonCryVolume/Panpot/Pitch/Length/Progress/Release
-type CryParams = { volume: number; pan: number; pitch: number; length: number; progress: number; release: number; priority: number; tone: number[] };
+type CryParams = { volume: number; pan: number; pitch: number; length: number; progress: number; release: number; priority: number; tone: number[]; toneReverse?: number[]; reverse?: boolean; chorus?: number };
 function crySong(p: CryParams, wave: Wave): { p: number; r: number; t: number[]; bytes: Uint8Array; v: Record<string, number[]>; w: Record<string, Wave> } {
   const b = (p.pitch + 0x80) & 0xffff;
   const key = (b >> 8) & 0x7f;
   const tune = (b >> 1) & 0x7f;
-  const tune2 = (16 + tune) & 0x7f;
+  // SetPokemonCryChorus: a second track detuned by `chorus` (tune units, wrapping in 7 bits), else one track
+  const chorus = p.chorus ?? 0;
+  const tune2 = ((chorus || 16) + tune) & 0x7f;
   const cont = 9;
   const len = p.length & 0xffff;
   const progress = p.progress >>> 0;
@@ -229,7 +233,8 @@ function crySong(p: CryParams, wave: Wave): { p: number; r: number; t: number[];
     0xbd, 0, 0xbe, p.volume & 0x7f, 0xcd, 0x0d, progress & 0xff, (progress >> 8) & 0xff, (progress >> 16) & 0xff, progress >>> 24,
     0xcd, 0x07, p.release & 0xff, 0xbf, (p.pan + 0x40) & 0x7f, 0xcf, key, 127, 0xcd, 0x0c, len & 0xff, len >> 8, 0xce, 0xb1,
   ]);
-  return { p: p.priority, r: 0, t: [0], bytes, v: { 0: p.tone }, w: { 0: wave } };
+  const tone = p.reverse && p.toneReverse ? p.toneReverse : p.tone;
+  return { p: p.priority, r: 0, t: chorus ? [0, 7] : [0], bytes, v: { 0: tone }, w: { 0: wave } };
 }
 
 dsLib.ds = { Wave, midiKeyToFreq, DsMixer, crySong, DS_SAMPLES };

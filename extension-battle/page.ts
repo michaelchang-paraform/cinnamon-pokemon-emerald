@@ -12,8 +12,8 @@ type MenuItem = { label: string; disabled?: boolean; pick: () => void; cls?: str
 type Action = 'up' | 'down' | 'left' | 'right' | 'ok' | 'back';
 
 const ns = (window as any).__pkb;
-const { Battle, START_COMMAND, NAME_MAX, POKEMON, LAUNCH_SELECTOR, NAV_SELECTOR, rt, report, timers, cleanups, listen, el, place,
-   clamp, upper, pixelArt, CLOSE_ART, Sfx, Link, savedName, cleanName, Menu,
+const { Battle, startCommand, NAME_MAX, POKEMON, LAUNCH_SELECTOR, NAV_SELECTOR, rt, report, timers, cleanups, listen, el, place,
+   clamp, upper, pixelArt, CLOSE_ART, SoundSettings, Link, savedName, cleanName, Menu,
    WEATHER_LABEL, assets, canvasEl, frameBox, SettingsRow, WAIT, CURSOR_COL, writeBattleSound, peSound, playerLook, cleanLook, trainerCanvas, playerSprite, DEFAULT_LOOK, wireLook, parseClaude, claudeModel, claudeStats, opponentMenu, CLAUDE_LOOK, parsePeerAddress, peerHint, resultReason } = ns;
 const SPEAKER = ['...x....', '..xx..x.', 'xxxx.x.x', 'xxxx.x.x', 'xxxx.x.x', '..xx..x.', '...x....'];
 const SPEAKER_OFF = ['...x....', '..xx....', 'xxxx.x.x', 'xxxx..x.', 'xxxx.x.x', '..xx....', '...x....'];
@@ -30,7 +30,7 @@ class App {
   open = false;
   screen: Screen = 'offline';
   readonly assets = assets;
-  readonly sfx = new Sfx();
+  readonly sfx = new SoundSettings();
   readonly link: Link;
   battle: Battle | null = null;
   result: ResultInfo | null = null;
@@ -102,7 +102,6 @@ class App {
     right.append(this.barRight, this.closeBtn);
     this.bar.append(this.barLeft, right);
     this.root.append(this.frame, this.bar);
-    this.root.addEventListener('pointerdown', () => this.sfx.unlock());
     this.launcher.type = 'button';
     this.launcher.setAttribute('aria-label', 'Pokemon battle (Ctrl+Shift+B)');
     this.launcher.title = 'Pokemon battle  (Ctrl+Shift+B)';
@@ -124,7 +123,6 @@ class App {
     clearInterval(this.clock);
     this.battle?.dispose();
     this.link.dispose();
-    this.sfx.dispose();
     this.assets.dispose();
     if (this.open) this.restoreFocus();
     this.root.remove();
@@ -168,7 +166,6 @@ class App {
     this.root.hidden = false;
     this.assets.load(this.root);
     this.layout();
-    if (!quiet) this.sfx.unlock();
     if (this.link.conn === 'offline') this.link.retryNow();
     this.render();
     this.music.sync(this);
@@ -519,7 +516,7 @@ class App {
         if (this.battle?.id === msg.battleId) this.battle.thinking(!!msg.thinking);
         return;
       case 'opponent_fallback':
-        if (this.battle?.id === msg.battleId) this.battle.fallback();
+        if (this.battle?.id === msg.battleId) this.battle.fallback(String(msg.reason ?? ''));
         return;
       case 'error':
         this.onError(msg);
@@ -546,7 +543,7 @@ class App {
       this.prompt = null;
       this.nextPrompt();
     }
-    const text = String(msg.message ?? msg.code ?? 'Something went wrong.');
+    const text = code === 'claude_origin' ? ns.CLAUDE_ORIGIN : String(msg.message ?? msg.code ?? 'Something went wrong.');
     this.setNotice(text.charAt(0).toUpperCase() + text.slice(1) + (text.endsWith('.') ? '' : '.'));
     peSound('SE_FAILURE');
   }
@@ -718,16 +715,17 @@ class App {
     view.append(frameBox(8, 8, 224, 80));
     view.append(this.txt('BATTLE HELPER OFFLINE', 8, 8), this.txt('Start it in its own Terminal tab:', 8, 24));
     const code = place(el('div', 'pkb-code'), 8, 44, 224, 30);
+    const { command, local } = startCommand();
     const lines: string[] = [];
     let line = '';
-    for (const part of START_COMMAND.split(/(?<=\/)/)) {
+    for (const part of command.split(/(?<=\/)/)) {
       if (line && assets.measure(line + part, 'small') > 216) {
         lines.push(line);
         line = part;
       } else line += part;
     }
     lines.push(line);
-    if (lines.length < 2) lines.push('in the folder of your clone');
+    if (!local && lines.length < 2) lines.push('in the folder of your clone');
     code.append(place(assets.text(lines.join('\n'), { font: 'small', color: 'std', lineHeight: 13 }), 4, 2));
     view.append(code);
     this.msgBox(view, 8, 104, 128, 48, this.notice && Date.now() - this.noticeAt < 4000 ? this.notice : `Retrying${WAIT}`);
@@ -736,7 +734,7 @@ class App {
       {
         label: 'COPY',
         pick: () => {
-          void navigator.clipboard?.writeText(START_COMMAND).then(
+          void navigator.clipboard?.writeText(command).then(
             () => {
               this.setNotice('Copied the command.');
               this.render();
@@ -1115,7 +1113,6 @@ class App {
     if (!action) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    this.sfx.unlock();
     this.act(action);
   }
 

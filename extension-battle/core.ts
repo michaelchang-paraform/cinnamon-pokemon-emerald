@@ -10,6 +10,12 @@ declare const cinnamon: {
 
 const DEFAULT_PORT = 41851;
 const START_COMMAND = './helper/start.sh';
+// sync-live.sh records the syncing machine's own clone (home as ~) in the helperStart setting; anywhere else the
+// offline screen shows the command relative to the clone
+function startCommand(): { command: string; local: boolean } {
+  const saved = cinnamon.settings.get('helperStart');
+  return typeof saved === 'string' && /^~?\/[\w./-]+\/helper\/start\.sh$/.test(saved) ? { command: saved, local: true } : { command: START_COMMAND, local: false };
+}
 const TEXT_MS = 22;
 const HOLD_MS = 800;
 const HP_STEP_MS = 16;
@@ -250,12 +256,8 @@ function writeSound(change: (state: SoundState) => Record<string, unknown>): Sou
   return next;
 }
 
-type SoundName = 'hit' | 'super' | 'weak' | 'faint' | 'ball' | 'status' | 'up' | 'down' | 'heal' | 'win' | 'lose';
-
-class Sfx {
-  private ctx: AudioContext | null = null;
-  private master: GainNode | null = null;
-  private noiseBuffer: AudioBuffer | null = null;
+// the battle window's stored mute choice; every sound itself comes from the audio extension
+class SoundSettings {
   sound = readSound();
   onChange: (() => void) | null = null;
 
@@ -281,106 +283,9 @@ class Sfx {
     return this.sound.windows.battle.muted ? 0 : this.sound.master.volume;
   }
 
-  get enabled(): boolean {
-    return this.level > 0;
-  }
-
-  get gain(): number | null {
-    return this.master ? this.master.gain.value : null;
-  }
-
   private apply(state: SoundState): void {
     this.sound = state;
-    if (this.master) this.master.gain.value = this.level;
     this.onChange?.();
-  }
-
-  unlock(): void {
-    if (rt.disposed || !this.enabled) return;
-    try {
-      // the synth context only starts inside a user gesture; battle events before one stay silent
-      if (!this.ctx && !(navigator as any).userActivation?.isActive) return;
-      if (!this.ctx) {
-        this.ctx = new AudioContext();
-        this.master = this.ctx.createGain();
-        this.master.gain.value = this.level;
-        this.master.connect(this.ctx.destination);
-      }
-      if (this.ctx.state === 'suspended') void this.ctx.resume().catch(() => {});
-    } catch {}
-  }
-
-  play(name: SoundName): void {
-    if (rt.disposed || !this.enabled) return;
-    this.unlock();
-    const ctx = this.ctx;
-    if (!ctx || ctx.state !== 'running') return;
-    try {
-      const t = ctx.currentTime + 0.01;
-      const note = (f0: number, dur: number, at = 0, f1 = f0, vol = 0.07, type: OscillatorType = 'square') => this.osc(type, f0, f1, t + at, dur, vol);
-      switch (name) {
-        case 'hit': this.noise(t, 0.14, 0.3, 2400); note(150, 0.1, 0, 60, 0.08); break;
-        case 'super': this.noise(t, 0.24, 0.38, 4200); note(220, 0.2, 0, 45, 0.1); break;
-        case 'weak': this.noise(t, 0.1, 0.18, 1200); break;
-        case 'faint': note(900, 0.55, 0, 110, 0.07); break;
-        case 'ball': note(300, 0.12, 0, 1400, 0.06); this.noise(t + 0.12, 0.09, 0.18, 6000); break;
-        case 'status': note(420, 0.06, 0); note(320, 0.06, 0.07); note(420, 0.06, 0.14); note(320, 0.08, 0.21); break;
-        case 'up': note(400, 0.28, 0, 1100, 0.05); break;
-        case 'down': note(1000, 0.28, 0, 300, 0.05); break;
-        case 'heal': note(660, 0.07, 0, 660, 0.05, 'triangle'); note(880, 0.07, 0.08, 880, 0.05, 'triangle'); note(1100, 0.1, 0.16, 1100, 0.05, 'triangle'); break;
-        case 'win': [523, 659, 784, 1046].forEach((f, i) => note(f, i === 3 ? 0.35 : 0.12, i * 0.13)); break;
-        case 'lose': [392, 330, 262].forEach((f, i) => note(f, 0.2, i * 0.22, f, 0.06)); break;
-      }
-    } catch {}
-  }
-
-  private osc(type: OscillatorType, f0: number, f1: number, start: number, dur: number, vol: number): void {
-    const ctx = this.ctx!;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(f0, start);
-    if (f1 !== f0) osc.frequency.exponentialRampToValueAtTime(f1, start + dur);
-    gain.gain.setValueAtTime(vol, start);
-    gain.gain.setValueAtTime(vol, start + dur * 0.75);
-    gain.gain.linearRampToValueAtTime(0.0001, start + dur);
-    osc.connect(gain).connect(this.master!);
-    osc.start(start);
-    osc.stop(start + dur + 0.02);
-    osc.onended = () => {
-      osc.disconnect();
-      gain.disconnect();
-    };
-  }
-
-  private noise(start: number, dur: number, vol: number, cutoff: number): void {
-    const ctx = this.ctx!;
-    if (!this.noiseBuffer) {
-      this.noiseBuffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-      const data = this.noiseBuffer.getChannelData(0);
-      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    }
-    const src = ctx.createBufferSource();
-    const filter = ctx.createBiquadFilter();
-    const gain = ctx.createGain();
-    src.buffer = this.noiseBuffer;
-    filter.type = 'lowpass';
-    filter.frequency.value = cutoff;
-    gain.gain.setValueAtTime(vol, start);
-    gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
-    src.connect(filter).connect(gain).connect(this.master!);
-    src.start(start);
-    src.stop(start + dur + 0.02);
-    src.onended = () => {
-      src.disconnect();
-      filter.disconnect();
-      gain.disconnect();
-    };
-  }
-
-  dispose(): void {
-    void this.ctx?.close().catch(() => {});
-    this.ctx = null;
   }
 }
 
@@ -867,4 +772,4 @@ function effectLine(cmd: string, args: string[], kw: Record<string, string>, L: 
 }
 
 const ns = ((window as any).__pkb = {});
-Object.assign(ns, { peSound, CURSOR_COL, readSound, writeSound, writeBattleSound, SOUND_EVENT, SOUND_KEY, DEFAULT_PORT, START_COMMAND, TEXT_MS, HOLD_MS, HP_STEP_MS, BAR, RETRY_MS, NAME_MAX, LAUNCH_ANCHORS, POKEMON, LAUNCH_SELECTOR, NAV_SELECTOR, rt, debugLog, report, timers, later, cancelLater, sleep, cleanups, listen, el, place, clamp, toId, upper, moveText, monText, SVG_NS, pixelArt, CURSOR, CURSOR_DARK, CURSOR_LIGHT, BALL, BALL_PAL, BALL_SMALL, BALL_SMALL_FNT, BALL_SMALL_EMPTY, CLOSE_ART, TINY, tinyText, withAcute, STATUS_COLORS, STATUS_TAGS, cssString, decodeBase64, Sfx, Link, savedName, cleanName, Menu, parseLine, parseIdent, parseDetails, parseHp, hpPx, effectName, STAT_NAMES, WEATHER_START, WEATHER_UPKEEP, WEATHER_END, WEATHER_ABILITY, WEATHER_LABEL, TRAPS, damageLine, healLine, statusLine, cantLine, sideLine, effectLine });
+Object.assign(ns, { peSound, CURSOR_COL, readSound, writeSound, writeBattleSound, SOUND_EVENT, SOUND_KEY, DEFAULT_PORT, START_COMMAND, startCommand, TEXT_MS, HOLD_MS, HP_STEP_MS, BAR, RETRY_MS, NAME_MAX, LAUNCH_ANCHORS, POKEMON, LAUNCH_SELECTOR, NAV_SELECTOR, rt, debugLog, report, timers, later, cancelLater, sleep, cleanups, listen, el, place, clamp, toId, upper, moveText, monText, SVG_NS, pixelArt, CURSOR, CURSOR_DARK, CURSOR_LIGHT, BALL, BALL_PAL, BALL_SMALL, BALL_SMALL_FNT, BALL_SMALL_EMPTY, CLOSE_ART, TINY, tinyText, withAcute, STATUS_COLORS, STATUS_TAGS, cssString, decodeBase64, SoundSettings, Link, savedName, cleanName, Menu, parseLine, parseIdent, parseDetails, parseHp, hpPx, effectName, STAT_NAMES, WEATHER_START, WEATHER_UPKEEP, WEATHER_END, WEATHER_ABILITY, WEATHER_LABEL, TRAPS, damageLine, healLine, statusLine, cantLine, sideLine, effectLine });

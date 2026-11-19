@@ -1,6 +1,7 @@
 // Builds the extension-battle data CSS from pret/pokeemerald graphics (personal use only) and the helper's
 // pokemon-showdown dex. PokeAPI sprites fill in only the forms pokeemerald lacks. Run: node source/battle/build-assets.mjs
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,7 +35,7 @@ const dirs = Object.fromEntries(readdirSync(MON).filter((d) => !d.includes('.'))
 const unownDir = (letter) => (letter === 'exclamation' ? 'exclamation_mark' : letter === 'question' ? 'question_mark' : letter);
 const unownKey = (letter) => (letter === 'exclamation' ? 'UNOWN_EMARK' : letter === 'question' ? 'UNOWN_QMARK' : `UNOWN_${letter.toUpperCase()}`);
 
-const blobs = { f: { chunks: [], offset: 0 }, b: { chunks: [], offset: 0 }, i: { chunks: [], offset: 0 } };
+const blobs = { f: { chunks: [], offset: 0 }, b: { chunks: [], offset: 0 }, i: { chunks: [], offset: 0 }, a: { chunks: [], offset: 0 } };
 const sprites = {};
 function addSprite(key, png) {
   const blob = blobs[key[0]];
@@ -76,6 +77,12 @@ for (const s of dex.species.all()) {
   const pal = readPal(palPath);
   addSprite(`f${file}`, indexed(join(MON, dir, 'front.png'), pal, 64));
   addSprite(`b${file}`, indexed(join(MON, dir, 'back.png'), pal, 64));
+  // anim_front.png stacks the entrance animation's two frames; the second one goes in battle-anim.css
+  const two = join(MON, dir, 'anim_front.png');
+  if (existsSync(two)) {
+    const img = decodePng(two);
+    if (img.height >= 128) addSprite(`a${file}`, encodeIndexed(img.width, 64, img.pixels.subarray(img.width * 64, img.width * 128), pal));
+  }
   const iconKey = id.startsWith('castform') ? 'castform' : file;
   if (!done.has(iconKey)) {
     addSprite(`i${iconKey}`, indexed(icon, readPal(join(MON, 'icon_palettes', `icon_palette_${iconPalette}.pal`))));
@@ -225,13 +232,43 @@ const colors = {
   pp3: [[230, 24, 0], [246, 222, 156]],
   party: [slotColors('plain').text, slotColors('plain').shadow],
 };
-const data = { types: TYPES, species, moves, sprites, fonts, chars, colors, hp: hpColors, slot: { plain: slotColors('plain'), on: slotColors('on'), fnt: slotColors('fnt'), fntOn: slotColors('fntOn') } };
+// the entrance animation per species: [frame, duration in game frames] pairs from sAnim_<Species>_1 (front_pic_anims.h)
+const frontAnims = {};
+for (const m of src('src/data/pokemon_graphics/front_pic_anims.h').matchAll(/sAnim_(\w+?)_1\[\] =\s*\{([\s\S]*?)\};/g)) {
+  const id = species[m[1].toLowerCase().replace(/_/g, '')] ? m[1].toLowerCase().replace(/_/g, '') : null;
+  const frames = [...m[2].matchAll(/ANIMCMD_FRAME\((\d+),\s*(\d+)\)/g)].flatMap((f) => [Number(f[1]), Number(f[2])]);
+  if (id && frames.length) frontAnims[id] = frames;
+}
+// the twelve ball sheets (graphics/balls, 16x48: closed, opening, open) and the particle sheet when it was fetched
+const BALLS = ['poke', 'great', 'safari', 'ultra', 'master', 'net', 'dive', 'nest', 'repeat', 'timer', 'luxury', 'premier'];
+const BALL_DIR = join(HERE, '..', 'sprites', 'download', 'pret', 'balls');
+const balls = {};
+for (const ball of BALLS) {
+  const file = join(BALL_DIR, `${ball}.png`);
+  if (!existsSync(file)) throw new Error(`missing ${file}: run source/sprites/download-balls.sh`);
+  const img = decodePng(file);
+  balls[ball] = b64(encodeIndexed(img.width, img.height, img.pixels, img.palette));
+}
+const PARTICLES = join(HERE, 'download', 'pret-anims');
+if (existsSync(join(PARTICLES, 'particles.png')) && existsSync(join(PARTICLES, 'circle_impact.png'))) {
+  const sheet = decodePng(join(PARTICLES, 'particles.png'));
+  const pal = decodePng(join(PARTICLES, 'circle_impact.png')).palette;
+  balls.particles = b64(encodeIndexed(sheet.width, sheet.height, sheet.pixels, pal));
+}
+const se = buildSoundTimelines();
+// gSineTable (src/trig.c), Q8.8, for the ported sprite callbacks that call Sin and Cos
+const sine = [...readFileSync(join(HERE, 'download', 'pret-anims', 'src', 'trig.c'), 'utf8').split('gSineTable[] =')[1].split('};')[0].matchAll(/Q_8_8\((-?[\d.]+)\)/g)].map((m) => Math.trunc(Number(m[1]) * 256));
+if (sine.length !== 320) throw new Error(`gSineTable has ${sine.length} entries, expected 320`);
+const data = { types: TYPES, species, moves, sprites, fonts, chars, colors, fa: frontAnims, hp: hpColors, se, sine, slot: { plain: slotColors('plain'), on: slotColors('on'), fnt: slotColors('fnt'), fntOn: slotColors('fntOn') } };
 const outputs = [
   ['battle-data.css', `.pkb-data { --pkb-data: "${b64(JSON.stringify(data))}"; }\n`],
   ['battle-ui.css', `.pkb-data { --pkb-ui: "${b64(JSON.stringify(ui))}"; }\n`],
   ['battle-front.css', `.pkb-data { --pkb-sprites-f: "${b64(Buffer.concat(blobs.f.chunks))}"; }\n`],
   ['battle-back.css', `.pkb-data { --pkb-sprites-b: "${b64(Buffer.concat(blobs.b.chunks))}"; }\n`],
   ['battle-icons.css', `.pkb-data { --pkb-sprites-i: "${b64(Buffer.concat(blobs.i.chunks))}"; }\n`],
+  ['battle-anim.css', `.pkb-data { --pkb-sprites-a: "${b64(Buffer.concat(blobs.a.chunks))}"; }\n`],
+  ['battle-balls.css', `.pkb-data { --pkb-balls: "${b64(JSON.stringify(balls))}"; }\n`],
+  ['battle-monanim.css', `.pkb-data { --pkb-monanim: "${b64(JSON.stringify(buildMonAnims()))}"; }\n`],
 ];
 for (const [name, css] of outputs) {
   if (css.length > MAX_CSS) throw new Error(`${name} is ${css.length} bytes, over ${MAX_CSS}: split it`);
@@ -239,3 +276,204 @@ for (const [name, css] of outputs) {
   console.log(`${name} ${css.length}`);
 }
 console.log(`species ${Object.keys(species).length}, sprites ${Object.keys(sprites).length}, ui images ${Object.keys(ui).length}`);
+
+// Every sound a battle anim script plays (data/battle_anim_scripts.s), as [end, frame, se, pan, ...] per script.
+// The pan stays the script's argument (SOUND_PAN_ATTACKER -64, SOUND_PAN_TARGET 63) so the page can apply
+// BattleAnimAdjustPanning for the real sides. waitforvisualfinish waits on sprite work no script states; it
+// counts VISUAL_WAIT frames.
+function buildSoundTimelines() {
+  const VISUAL_WAIT = 16;
+  const file = join(HERE, 'download', 'pret-anims', 'data', 'battle_anim_scripts.s');
+  if (!existsSync(file)) throw new Error(`missing ${file}: run source/battle/fetch-anims.sh`);
+  const labels = {};
+  let current = null;
+  for (const raw of readFileSync(file, 'utf8').split('\n')) {
+    const line = raw.replace(/@.*$/, '').trim();
+    const label = /^(\w+):{1,2}$/.exec(line);
+    if (label) {
+      current = labels[label[1]] = labels[label[1]] ?? [];
+      continue;
+    }
+    if (current && line) current.push(line);
+  }
+  // a run of labels with no commands between them shares the next label's commands
+  const lines = Object.entries(labels);
+  for (let i = lines.length - 1; i >= 0; i--) if (!lines[i][1].length && i + 1 < lines.length) labels[lines[i][0]] = lines[i + 1][1];
+  const value = (arg) => {
+    const a = arg.trim();
+    if (a === 'SOUND_PAN_ATTACKER') return -64;
+    if (a === 'SOUND_PAN_TARGET') return 63;
+    const n = Number(a.replace(/^\+/, ''));
+    return Number.isFinite(n) ? n : null;
+  };
+  const names = [];
+  const nameIndex = (se) => {
+    let i = names.indexOf(se);
+    if (i < 0) i = names.push(se) - 1;
+    return i;
+  };
+  const toward = (from, to, step, frames) => {
+    const dir = Math.sign(to - from);
+    return Math.max(-64, Math.min(63, dir > 0 ? Math.min(to, from + step * frames) : Math.max(to, from - step * frames)));
+  };
+  function run(entry, turn) {
+    const out = [];
+    let t = 0;
+    let soundEnd = 0;
+    let steps = 0;
+    let fadeStart = -Infinity;
+    // return values the script branches on that do not depend on the battle: random battle sets carry the
+    // friendship that gives Return and Frustration their strongest animation, and this is never a contest
+    const RETURNS = { AnimTask_GetReturnPowerLevel: 3, AnimTask_GetFrustrationPowerLevel: 3, AnimTask_IsContest: 0 };
+    let ret;
+    const play = (at, se, pan) => {
+      out.push([at, nameIndex(se), pan]);
+      soundEnd = Math.max(soundEnd, at);
+    };
+    const exec = (name, stack) => {
+      const body = labels[name];
+      if (!body) throw new Error(`anim script label ${name} not found`);
+      for (let i = 0; i < body.length; i++) {
+        if (++steps > 5000) throw new Error(`anim script ${entry} does not end`);
+        const [cmd, ...rest] = body[i].split(/\s+/);
+        const args = rest.join(' ').split(',').map((s) => s.trim());
+        switch (cmd) {
+          case 'delay': t += value(args[0]) ?? 0; break;
+          case 'waitforvisualfinish': t += VISUAL_WAIT; break;
+          case 'waitsound': t = Math.max(t, soundEnd); break;
+          case 'playsewithpan': play(t, args[0], value(args[1]) ?? 0); break;
+          case 'playse': play(t, args[0], 0); break;
+          case 'panse': case 'panse_adjustnone': case 'panse_adjustall': play(t, args[0], value(args[1]) ?? 0); break;
+          case 'waitplaysewithpan': play(t + (value(args[2]) ?? 0), args[0], value(args[1]) ?? 0); break;
+          case 'loopsewithpan': {
+            const wait = value(args[2]) ?? 0;
+            for (let n = 0; n < (value(args[3]) ?? 1); n++) play(t + n * (wait + 1), args[0], value(args[1]) ?? 0);
+            break;
+          }
+          // Task_FadeToBg: a hardware fade out to the move's background and back, 18 frames each way
+          case 'fadetobg': case 'fadetobgfromset': case 'restorebg': fadeStart = t; break;
+          case 'waitbgfadeout': t = Math.max(t, fadeStart + 18); break;
+          case 'waitbgfadein': t = Math.max(t, fadeStart + 36); break;
+          case 'createvisualtask': {
+            const [task, , ...rest] = args;
+            ret = RETURNS[task];
+            if (task === 'SoundTask_PlaySE1WithPanning' || task === 'SoundTask_PlaySE2WithPanning') play(t, rest[0], value(rest[1]) ?? 0);
+            // the attacker's (or target's) own cry in a PlayCry_ByMode mode; the page plays it through cry()
+            else if (task === 'SoundTask_PlayCryHighPitch') play(t, `CRY:high_pitch:${rest[0]}`, -64);
+            else if (task === 'SoundTask_PlayDoubleCry') play(t, `CRY:${rest[1] === 'DOUBLE_CRY_GROWL' ? 'growl' : 'roar'}:${rest[0]}`, -64);
+            else if (task === 'SoundTask_PlayCryWithEcho') play(t, `CRY:echo:ANIM_ATTACKER`, -64);
+            break;
+          }
+          case 'createsoundtask': {
+            if (args[0] === 'SoundTask_LoopSEAdjustPanning') {
+              const [from, to, step, count, , every] = args.slice(2).map(value);
+              for (let n = 0; n < count; n++) play(t + n * (every + 1), args[1], toward(from, to, step, n * (every + 1)));
+            } else if (args[0] === 'SoundTask_FireBlast') {
+              for (let f = 1; f <= 100; f += 11) play(t + f, args[1], toward(-64, 63, 2, f));
+              play(t + 112, args[2], 63);
+              play(t + 118, args[2], 63);
+            }
+            break;
+          }
+          case 'jumpreteq': if (ret === value(args[0])) return exec(args[1], stack); break;
+          case 'jumprettrue': if (ret) return exec(args[0], stack); break;
+          case 'jumpretfalse': if (ret === 0) return exec(args[0], stack); break;
+          case 'call': exec(args[0], stack + 1); break;
+          case 'goto': return exec(args[0], stack);
+          case 'choosetwoturnanim': return exec(turn === 1 ? args[0] : args[1], stack);
+          case 'return': return;
+          case 'end': return;
+        }
+      }
+    };
+    exec(entry, 0);
+    out.sort((a, b) => a[0] - b[0]);
+    return [Math.max(t, soundEnd), ...out.flat()];
+  }
+  const table = (name) => {
+    const start = labels[name];
+    if (!start) throw new Error(`anim table ${name} not found`);
+    return start.filter((l) => l.startsWith('.4byte')).map((l) => l.split(/\s+/)[1]);
+  };
+  const scripts = {};
+  const movesTable = table('gBattleAnims_Moves');
+  for (const m of dex.moves.all()) {
+    if (!m.exists || m.num < 1 || m.num > 354 || m.isNonstandard) continue;
+    const label = movesTable[m.num];
+    scripts[m.id] = run(label, 2);
+    if (labels[label].some((l) => l.startsWith('choosetwoturnanim'))) scripts[`${m.id}@1`] = run(label, 1);
+  }
+  for (const group of ['gBattleAnims_StatusConditions', 'gBattleAnims_General', 'gBattleAnims_Special'])
+    for (const label of table(group)) if (labels[label]) scripts[label.replace(/^(Status|General|Special)_/, (p, g) => `${{ Status: 's', General: 'g', Special: 'x' }[g]}:`)] = run(label, 2);
+  const withSound = Object.values(scripts).filter((s) => s.length > 1).length;
+  console.log(`anim scripts ${Object.keys(scripts).length}, with sound ${withSound}, effects ${names.length}`);
+  return { n: names, a: scripts };
+}
+
+// The entrance animations: pokemon_animation.c's own sprite callbacks, compiled with clang against the engine stub
+// in tools/monanim and run once, record each ANIM_* frame by frame. Without clang the build reuses the committed
+// recording. Frames are [x2, y2, rotation, xScale, yScale, blend coeff, blend RGB555, invisible] with default
+// trailing values dropped; a number repeats the previous frame that many more times.
+function buildMonAnims() {
+  const TOOL = join(HERE, 'tools', 'monanim');
+  const RECORDED = join(TOOL, 'mon-anims.json');
+  const A = join(HERE, 'download', 'pret-anims');
+  const probe = spawnSync('clang', ['--version'], { encoding: 'utf8' });
+  if (probe.status === 0) {
+    const out = join(TOOL, 'out');
+    mkdirSync(out, { recursive: true });
+    try {
+      const bin = join(out, 'mon_anim');
+      const cc = spawnSync('clang', ['-O1', '-w', `-I${join(TOOL, 'include')}`, `-I${join(A, 'include')}`, `-I${join(PE, 'include')}`, `-DPOKEMON_ANIMATION_C="${join(A, 'src', 'pokemon_animation.c')}"`, join(TOOL, 'mon_anim.c'), join(TOOL, 'engine.c'), join(A, 'src', 'trig.c'), '-o', bin], { encoding: 'utf8' });
+      if (cc.status !== 0) throw new Error(`monanim compile failed:\n${cc.stderr}`);
+      const run = spawnSync(bin, [], { encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+      if (run.status !== 0) throw new Error(`monanim run failed: ${run.stderr || run.signal}`);
+      const DEFAULTS = [0, 0, 0, 256, 256, 0, 0, 0];
+      const packed = JSON.parse(run.stdout).map((frames) => {
+        const list = [];
+        let prev = null;
+        for (const [x2, y2, sx, sy, rot, coeff, color, inv] of frames) {
+          const frame = [x2, y2, rot, sx, sy, coeff, color, inv];
+          while (frame.length && frame[frame.length - 1] === DEFAULTS[frame.length - 1]) frame.pop();
+          const key = JSON.stringify(frame);
+          if (key === prev) {
+            if (typeof list[list.length - 1] === 'number') list[list.length - 1]++;
+            else list.push(1);
+          } else list.push(frame);
+          prev = key;
+        }
+        return list;
+      });
+      writeFileSync(RECORDED, `${JSON.stringify(packed)}\n`);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  } else console.log('clang not found: reusing tools/monanim/mon-anims.json');
+  const frames = JSON.parse(readFileSync(RECORDED, 'utf8'));
+  const header = readFileSync(join(A, 'include', 'pokemon_animation.h'), 'utf8');
+  const ids = Object.fromEntries([...header.matchAll(/#define ((?:BACK_)?ANIM_\w+)\s+(\d+)/g)].map((m) => [m[1], Number(m[2])]));
+  const code = readFileSync(join(A, 'src', 'pokemon_animation.c'), 'utf8');
+  const pokemon = src('src/pokemon.c');
+  const block = (text, name) => text.split(name)[1].split('};')[0];
+  const dexOf = (constName) => dex.species.get(constName.toLowerCase().replace(/_/g, ''))?.num ?? null;
+  const front = {};
+  for (const m of block(pokemon, 'sMonFrontAnimIdsTable[NUM_SPECIES - 1] =').matchAll(/\[SPECIES_(\w+) - 1\]\s*=\s*(ANIM_\w+)/g)) {
+    const num = dexOf(m[1]);
+    if (num) front[num] = [ids[m[2]], 0];
+  }
+  for (const m of block(pokemon, 'sMonAnimationDelayTable[NUM_SPECIES - 1] =').matchAll(/\[SPECIES_(\w+) - 1\]\s*=\s*(\d+)/g)) {
+    const num = dexOf(m[1]);
+    if (num && front[num]) front[num][1] = Number(m[2]);
+  }
+  // GetSpeciesBackAnimSet: BACK_ANIM_NONE falls back to the first set
+  const back = {};
+  for (const m of block(code, 'sSpeciesToBackAnimSet[] =').matchAll(/\[SPECIES_(\w+)\]\s*=\s*(BACK_ANIM_\w+)/g)) {
+    const num = dexOf(m[1]);
+    if (num) back[num] = Math.max(0, ids[m[2]] - 1);
+  }
+  const sets = [];
+  for (const m of block(code, 'sBackAnimationIds[] =').matchAll(/\[\((BACK_ANIM_\w+) - 1\) \* 3\]\s*=\s*(ANIM_\w+),\s*(ANIM_\w+),\s*(ANIM_\w+)/g)) sets[ids[m[1]] - 1] = [ids[m[2]], ids[m[3]], ids[m[4]]];
+  const nature = Object.fromEntries([...block(code, 'sBackAnimNatureModTable[NUM_NATURES] =').matchAll(/\[NATURE_(\w+)\]\s*=\s*(\d)/g)].map((m) => [m[1].toLowerCase(), Number(m[2])]));
+  console.log(`mon anims ${frames.length}, front ${Object.keys(front).length}, back ${Object.keys(back).length}, back sets ${sets.length}`);
+  return { f: frames, front, back, sets, nature };
+}

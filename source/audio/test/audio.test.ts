@@ -156,6 +156,40 @@ describe('cries', () => {
     const seconds = r.samples.length / 48000;
     expect(Math.abs(seconds - wave.size / 10512)).toBeLessThan(0.05);
   });
+  test('weak and faint cries: SetPokemonCryPitch(15000) and (14440) lower the key by 1.8125 and 3.1875 semitones', () => {
+    const modes = data.cries.modes;
+    expect(modes.weak).toEqual({ pitch: 15000 });
+    expect(modes.faint).toEqual({ release: 200, pitch: 14440 });
+    const wave = new lib.ds.Wave(cryBins[254], data.tables.delta);
+    const rate = (mode: string) => lib.seq.renderSong(lib.ds.crySong({ ...data.cries.params, ...modes[mode] }, wave), data.tables, 48000, 0.5 / 15).notes[0][2];
+    expect(Math.abs(1200 * Math.log2(rate('weak') / 10512) + 181.25)).toBeLessThan(2);
+    expect(Math.abs(1200 * Math.log2(rate('faint') / 10512) + 318.75)).toBeLessThan(2);
+  });
+  test('battle cry modes: chorus adds a detuned second track, growl and echo start with the sample reversed', () => {
+    const wave = new lib.ds.Wave(cryBins[254], data.tables.delta);
+    const part = (mode: string) => lib.seq.renderSong(lib.ds.crySong({ ...data.cries.params, ...data.cries.modes[mode] }, wave), data.tables, 48000, 0.5 / 15);
+    expect(part('high_pitch').notes.length).toBe(2);
+    expect(part('echo_start').notes.length).toBe(2);
+    expect(part('growl_1').notes.length).toBe(1);
+    expect(data.cries.modes.growl_1.reverse).toBe(true);
+    expect(data.cries.modes.echo_start.reverse).toBe(true);
+    // reversed: the first output samples come from the sample's end
+    const fwd = part('roar_1').samples;
+    const rev = part('growl_1').samples;
+    expect(Buffer.from(fwd.buffer).equals(Buffer.from(rev.buffer))).toBe(false);
+  });
+  test('growl and roar start their second cry the frame after the first song ends; echo cuts the first', () => {
+    const wave = new lib.ds.Wave(cryBins[25], data.tables.delta);
+    const fine = (mode: string) => lib.seq.renderSong(lib.ds.crySong({ ...data.cries.params, ...data.cries.modes[mode] }, wave), data.tables, 48000, 0.5 / 15).fineFrame;
+    expect(fine('growl_1')).toBe(15);
+    expect(fine('roar_1')).toBe(10);
+    const growl = lib.seq.cryClip(wave, data.cries, data.tables, 'growl', 48000, 0.5 / 15);
+    const second = Math.round((16 * 17556 * 48000) / (1 << 20));
+    expect(Math.abs(growl[second - 1])).toBeLessThan(1);
+    expect(growl.length).toBeGreaterThan(second);
+    const echo = lib.seq.cryClip(wave, data.cries, data.tables, 'echo', 48000, 0.5 / 15);
+    expect(echo.length).toBeGreaterThan(Math.round((29 * 17556 * 48000) / (1 << 20)));
+  });
   test('a long cry is cut by the 140-frame wait, then EOT with release 0', () => {
     const lengths = Object.keys(cryBins).map((dex) => {
       const wave = new lib.ds.Wave(cryBins[Number(dex)], data.tables.delta);

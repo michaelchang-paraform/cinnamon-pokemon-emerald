@@ -388,6 +388,7 @@ your choice is already sent, show `CLAUDE is thinking...`. Hide it on `thinking:
 | --- | --- |
 | `failures` | 3 decisions in a row failed (bad reply after one retry, timeout, error exit). |
 | `budget` | The battle reached the helper's cost cap (`--claude-battle-budget`, default 0.50 USD). |
+| `daily_budget` | Claude spend for today (local day) reached the daily cap (`--claude-daily-budget`, default 1.00 USD). Suggested text: `CLAUDE is out of budget for today. CPU takes over.` |
 
 A single failed decision uses the scripted move for that turn and sends nothing. Suggested text:
 `CLAUDE went quiet. CPU takes over.`
@@ -406,7 +407,16 @@ What Claude sees: only the p2 view (its own team with exact HP, the foe's visibl
 boosts and revealed moves, items and abilities, the weather and the last turn's events) and the legal action list.
 It never sees your team, your request or your queued choice. The prompt has no type-effectiveness hints.
 
-Errors for `start_cpu`: `bad_value` for an unknown `opponent` or `model`, `claude_unavailable` when
+Who can start a Claude battle: only a page whose WebSocket `Origin` is an allowed page origin (`https://claude.ai`,
+the Origin the Cinnamon page sends, plus any `--allow-origin`). A client with no `Origin` (a local script) gets
+`claude_origin`, but it can still play scripted CPU and LAN battles. A local program can forge the header, so the daily cap is
+the real limit.
+
+The daily cap counts `total_cost_usd` from every Claude run on this Mac and resets at local midnight. It is stored in
+`~/.pokemon-emerald/claude-spend.json`. A battle that starts after the cap is reached gets `opponent_fallback` with
+`daily_budget` at the first CPU decision.
+
+Errors for `start_cpu`: `claude_origin` when the connection has no allowed Origin, `bad_value` for an unknown `opponent` or `model`, `claude_unavailable` when
 `welcome.claude.available` is false.
 
 ### Errors

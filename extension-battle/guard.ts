@@ -214,9 +214,32 @@ async function walk(app: any, stopAt = ''): Promise<{ states: number; runs: numb
   const findings: Finding[] = [];
   const glyphLog: Glyph[] = [];
   ns.glyphLog = glyphLog;
+  // a fixed-width paint cuts a long line at the canvas edge, where no ink check can see it; keep the full text
+  const assets = ns.assets;
+  const paint = assets.paint;
+  const painted = new WeakMap<HTMLCanvasElement, { text: string; font: string; width: number }>();
+  assets.paint = function (canvas: HTMLCanvasElement, text: string, opts: { font?: string; width?: number } = {}) {
+    if (opts.width !== undefined) painted.set(canvas, { text, font: opts.font ?? 'normal', width: opts.width });
+    else painted.delete(canvas);
+    return paint.call(this, canvas, text, opts);
+  };
+  const overflow = (name: string) => {
+    for (const canvas of app.screenEl.querySelectorAll('canvas') as NodeListOf<HTMLCanvasElement>) {
+      const entry = painted.get(canvas);
+      if (!entry || !canvas.getClientRects().length) continue;
+      for (const line of entry.text.replaceAll(ns.WAIT, '...').split('\n')) {
+        const w = assets.measure(line, entry.font);
+        if (w > entry.width) findings.push({ state: name, issue: 'text overflows its box', a: `"${line.slice(0, 40)}" w ${w}`, b: `box ${entry.width}` });
+      }
+    }
+  };
+  ns.sendOutFastForward = true;
   const finish = <T,>(result: T): T => {
+    ns.sendOutFastForward = false;
+    assets.paint = paint;
     ns.glyphLog = undefined;
     findings.push(...glyphFindings(glyphLog));
+    for (const id of ns.missingEffects?.() ?? []) findings.push({ state: 'audio', issue: 'sound effect missing from pokemon-audio', a: id, b: 'plays silence' });
     return result;
   };
   let states = 0;
@@ -225,11 +248,18 @@ async function walk(app: any, stopAt = ''): Promise<{ states: number; runs: numb
   const errorsBefore = ns.debugLog.errors.length;
   const visit = async (name: string): Promise<boolean> => {
     await frame();
+    // a typing message box or a send-out is measured once it settles, never part way
+    for (let i = 0; i < 40 && app.battle?.running && !app.battle.dead; i++) {
+      app.battle.skip = true;
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    if (app.battle?.running && !app.battle.dead) findings.push({ state: name, issue: 'UNSETTLED', a: 'battle still running after 1.2 s', b: 'not measured settled' });
     ns.forceDots?.(3);
     if (ns.debugLog.errors.length > errorsBefore) findings.push({ state: name, issue: 'render error', a: String(ns.debugLog.errors.at(-1)).slice(0, 120), b: '' });
     states++;
     (window as any).__names?.push(name);
     runs += check(name, app.screenEl, findings);
+    overflow(name);
     return name === stopAt;
   };
   const walkMenus = async (name: string): Promise<boolean> => {
@@ -317,7 +347,14 @@ async function walk(app: any, stopAt = ''): Promise<{ states: number; runs: numb
     if (await visit('battle/thinking/row0')) return finish({ states, runs, findings, stopped: true });
     battle.fallback();
     if (await visit('battle/fallback/row0')) return finish({ states, runs, findings, stopped: true });
+    battle.fallback('daily_budget');
+    if (await visit('battle/fallback-budget/row0')) return finish({ states, runs, findings, stopped: true });
     battle.thinking(false);
+    for (const key of ['foe', 'me']) {
+      const active = battle.sides[key === 'me' ? battle.mySide : battle.foeSide].active;
+      if (active && ns.sendOutEnabled?.()) await battle.sendOut(key, active);
+      if (await visit(`battle/sendout-${key}/row0`)) return finish({ states, runs, findings, stopped: true });
+    }
     const boxes = battle.boxes;
     for (const status of ['slp', 'psn', 'brn', 'par', 'frz', 'tox', '']) {
       for (const key of ['me', 'foe']) {
@@ -346,6 +383,7 @@ async function walk(app: any, stopAt = ''): Promise<{ states: number; runs: numb
     ['lobby', () => { app.link.conn = 'online'; app.welcomed = true; app.trainer = { id: 'me', name: WIDE }; app.peers = peers; app.screen = 'lobby'; app.lobbyFocus = 'menu'; }],
     ['lobby-peers', () => { app.lobbyFocus = 'peers'; }],
     ['lobby-waiting', () => { app.lobbyFocus = 'menu'; app.peers = []; app.looking = true; app.notice = ''; }],
+    ['lobby-claude-origin', () => { app.notice = ''; app.onMessage({ type: 'error', re: 'start_cpu', code: 'claude_origin', message: 'Claude battles start only from the Claude app page' }); }],
     ['lobby-searching', () => { app.setNotice(`Looking for trainers${ns.WAIT}`); app.peers = peers; }],
     ['lobby-foe', () => { app.notice = ''; app.panel = 'foe'; app.lobbyFocus = 'peers'; app.claude = { available: true, reason: '', models: ['haiku', 'sonnet', 'opus', 'fable'], defaultModel: 'haiku' }; }],
     ['lobby-foe-off', () => { app.claude = ns.parseClaude(null); }],
