@@ -148,7 +148,7 @@ const LONG_MONS = ['Charmeleon', 'Butterfree', 'Masquerain', 'Crawdaunt', 'Ludic
 
 type Glyph = { run: number; ch: string; font: 'normal' | 'small' | 'narrow'; x: number; code: number; w: number; h: number };
 
-// every glyph sits on a whole game pixel and copies exactly the tile columns the game copies (text.c DecompressGlyph_*)
+// every glyph sits on a whole game pixel and copies exactly the tile columns the game copies
 function glyphFindings(log: Glyph[]): Finding[] {
   const out: Finding[] = [];
   const seen = new Set<string>();

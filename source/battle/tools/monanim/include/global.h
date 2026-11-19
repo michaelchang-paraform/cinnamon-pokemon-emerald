@@ -27,7 +27,6 @@ typedef void (*TaskFunc)(u8 taskId);
 #define RGB(r, g, b) ((r) | ((g) << 5) | ((b) << 10))
 #define MAX_BATTLERS_COUNT 4
 #define MAX_SPRITES 64
-#define POKEBALL_COUNT 12
 #define ST_OAM_AFFINE_OFF 0
 #define ST_OAM_AFFINE_NORMAL 1
 #define ST_OAM_AFFINE_ERASE 2
@@ -70,6 +69,9 @@ struct Sprite {
   s16 x, y, x2, y2;
   s16 centerToCornerVecX, centerToCornerVecY;
   u8 animNum, animCmdIndex, animDelayCounter, imageValue;
+  u8 affineNum, affineIndex, affineDelay;
+  bool8 affineBeginning;
+  u16 affineRotation;
   bool8 inUse, invisible, hFlip, vFlip, animBeginning, animEnded, affineAnimPaused, affineAnimEnded;
   s16 data[8];
 };
@@ -113,4 +115,26 @@ u8 GetNature(struct Pokemon *mon);
 u8 CreateSprite(const struct SpriteTemplate *template, s16 x, s16 y, u8 subpriority);
 void StartSpriteAnim(struct Sprite *sprite, u8 animNum);
 void DestroySprite(struct Sprite *sprite);
+void DestroySpriteAndFreeResources(struct Sprite *sprite);
+void AnimateSprite(struct Sprite *sprite);
+void AnimateAffine(struct Sprite *sprite);
+void ChangeSpriteAffineAnim(struct Sprite *sprite, u8 num);
+void PlaySE(u16 song);
+
+// the battle state the throw and particle callbacks look at, fixed to one single battle on the player's side
+struct SimAnimationData { u8 numBallParticles; bool8 introAnimActive; u16 ballSubpx; u8 ballThrowCaseId; };
+struct SimBattleSprites { struct SimAnimationData *animationData; };
+extern struct SimBattleSprites *gBattleSpritesDataPtr;
+extern s16 gSimTarget[2];
+#define BATTLER_COORD_X 0
+#define BATTLER_COORD_Y 1
+#define BATTLER_COORD_X_2 2
+#define BATTLER_COORD_Y_PIC_OFFSET 3
+#define B_POSITION_PLAYER_LEFT 0
+#define B_POSITION_PLAYER_RIGHT 2
+u8 GetBattlerSpriteCoord(u8 battler, u8 coord);
+bool8 IsDoubleBattle(void);
+u8 GetBattlerAtPosition(u8 position);
+extern const struct OamData gOamData_AffineOff_ObjNormal_8x8;
+extern const union AffineAnimCmd *const gDummySpriteAffineAnimTable[];
 #endif

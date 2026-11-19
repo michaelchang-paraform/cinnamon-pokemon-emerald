@@ -6,45 +6,26 @@ const { el, listen, NAV_SELECTOR, LAUNCH_SELECTOR } = ns;
 const LAUNCH_BALLS = ['poke', 'great', 'ultra', 'master', 'safari', 'net', 'dive', 'nest', 'repeat', 'timer', 'luxury', 'premier'];
 const LAUNCH_BALL_LABELS = ['Poké Ball', 'Great Ball', 'Ultra Ball', 'Master Ball', 'Safari Ball', 'Net Ball', 'Dive Ball', 'Nest Ball', 'Repeat Ball', 'Timer Ball', 'Luxury Ball', 'Premier Ball'];
 const GAME_FRAME_MS = 1000 / 59.7275;
-// BALL_WAIT_NEXT_SHAKE: the game waits 31 frames between shakes
-const SHAKE_WAIT_FRAMES = 31;
 
-// one catch shake, SpriteCB_Ball_Wobble_Step (battle_anim_throw.c): roll 8, pivot, roll back 13, pivot into roll 5
-function catchShake(): BallState[] {
-  const states: BallState[] = [];
-  let rot = 0, x = 0, dir = 1, sub = 0, step = 3;
-  for (const limit of [8, 0, 13, 5]) {
-    if (!limit) {
-      dir = -dir;
-      step = -step;
-      rot += step;
-      states.push([rot, x]);
-      continue;
-    }
-    for (let t = 0; t < limit; t++) {
-      if (sub > 255) {
-        x += dir;
-        sub &= 0xff;
-      } else sub += 176;
-      rot += step;
-      states.push([rot, x]);
-    }
-    sub = 0;
-    if (limit === 13) {
-      dir = -dir;
-      step = -step;
-    }
+// two catch shakes with their pauses, recorded from the game by build-assets.mjs into battle-balls.css; the turn
+// comes in 65536ths with the game's sign, the art turns in 256ths the other way
+let launchAnim: BallState[] | null = null;
+function shakeFrames(): BallState[] {
+  if (!launchAnim) {
+    launchAnim = [[0, 0]];
+    try {
+      const probe = el('div', 'pkb-data');
+      probe.hidden = true;
+      document.body.append(probe);
+      const raw = getComputedStyle(probe).getPropertyValue('--pkb-balls').trim().replace(/^["']|["']$/g, '');
+      probe.remove();
+      const shake: [number, number][] | undefined = raw ? JSON.parse(new TextDecoder().decode(ns.decodeBase64(raw))).so?.wobble : undefined;
+      if (shake?.length) launchAnim = shake.map(([turn, x]): BallState => [-turn / 256, x]);
+    } catch {}
   }
-  states.push([rot, x]);
-  return states;
+  return launchAnim;
 }
 
-const SHAKE = catchShake();
-const WAIT: BallState[] = Array.from({ length: SHAKE_WAIT_FRAMES }, () => [0, 0]);
-// the next shake tips the other way, as sDirection flips between shakes in SpriteCB_Ball_Wobble_Step
-const LAUNCH_ANIM: BallState[] = [...SHAKE, ...WAIT, ...SHAKE.map(([rot, x]): BallState => [-rot, -x]), ...WAIT];
-
-// GBA double-size affine sprite: nearest texel, 256 units per turn, the 12 px ball sits at (2,2) of its 16 px cell
 function affineFrame(src: ImageData, [rot, shift]: BallState): Uint8ClampedArray {
   const out = new Uint8ClampedArray(32 * 32 * 4);
   const theta = (rot * 2 * Math.PI) / 256;
@@ -117,7 +98,7 @@ class LauncherArt {
     const rctx = read.getContext('2d')!;
     rctx.drawImage(img, 0, 0);
     const src = rctx.getImageData(0, 0, read.width, read.height);
-    const keys = [...new Set(['0,0', ...LAUNCH_ANIM.map((state) => state.join())])];
+    const keys = [...new Set(['0,0', ...shakeFrames().map((state) => state.join())])];
     const frames = keys.map((key) => affineFrame(src, key.split(',').map(Number) as BallState));
     let x0 = 32, y0 = 32, x1 = 0, y1 = 0;
     for (const f of frames)
@@ -136,10 +117,10 @@ class LauncherArt {
     sheet.height = h;
     const sctx = sheet.getContext('2d')!;
     frames.forEach((f, n) => sctx.putImageData(new ImageData(f, 32, 32), n * w - x0, -y0, x0, y0, w, h));
-    const total = LAUNCH_ANIM.length;
+    const total = shakeFrames().length;
     // percent offsets pick frame n of the sheet at any --pe-px, so a zoom change needs no rebuild
     const at = (n: number) => `${((n / (frames.length - 1)) * 100).toFixed(4)}%`;
-    const stops = LAUNCH_ANIM.map((state, n) => `${((n / total) * 100).toFixed(4)}%{background-position-x:${at(keys.indexOf(state.join()))}}`);
+    const stops = shakeFrames().map((state, n) => `${((n / total) * 100).toFixed(4)}%{background-position-x:${at(keys.indexOf(state.join()))}}`);
     stops.push(`100%{background-position-x:0%}`);
     this.style.textContent = `@keyframes pkb-ball-idle{${stops.join('')}}`;
     Object.assign(this.art.style, {

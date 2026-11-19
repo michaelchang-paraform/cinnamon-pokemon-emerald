@@ -1,5 +1,5 @@
 // The one music channel all Pokemon windows share, as pure logic so the bun test can drive it: one track sounds at a
-// time. A fanfare (m4aFanfare) pauses the music, plays once, and the music resumes where it was. A music start that
+// time. A fanfare pauses the music, plays once, and the music resumes where it was. A music start that
 // finds the AudioContext locked waits for the next gesture for QUEUE_MS at most; a fanfare never waits.
 type ChannelDeps = {
   gain(win: string): number;
@@ -14,12 +14,12 @@ type ChannelDeps = {
   // silences at once whatever is still fading out
   cutFading(): void;
   emit(win: string, id: string | null, state: string): void;
+  // true for a fanfare (the build's list of fanfares with their lengths)
+  isFanfare(id: string): boolean;
 };
 type Bgm = { id: string; window: string; offset: number; queuedAt: number | null; mutedSent?: boolean };
 
 const QUEUE_MS = 2000;
-// sound.c sFanfares: frames each fanfare holds the music for
-const FANFARE_FRAMES: Record<string, number> = { MUS_LEVEL_UP: 80, MUS_EVOLVED: 220 };
 
 class MusicChannel {
   bgm: Bgm | null = null;
@@ -31,12 +31,8 @@ class MusicChannel {
 
   constructor(private readonly d: ChannelDeps) {}
 
-  static isFanfare(id: string): boolean {
-    return id in FANFARE_FRAMES;
-  }
-
   music(id: string, win: string): void {
-    if (MusicChannel.isFanfare(id)) {
+    if (this.d.isFanfare(id)) {
       this.playFanfare(id, win);
       return;
     }
@@ -180,4 +176,4 @@ class MusicChannel {
 }
 
 const channelLib = ((window as any).__peaLib ??= {});
-channelLib.channel = { MusicChannel, QUEUE_MS, FANFARE_FRAMES };
+channelLib.channel = { MusicChannel, QUEUE_MS };

@@ -255,11 +255,13 @@ if (existsSync(join(PARTICLES, 'particles.png')) && existsSync(join(PARTICLES, '
   const pal = decodePng(join(PARTICLES, 'circle_impact.png')).palette;
   balls.particles = b64(encodeIndexed(sheet.width, sheet.height, sheet.pixels, pal));
 }
+balls.so = buildSendOut('clang', join(HERE, 'tools', 'monanim'));
 const se = buildSoundTimelines();
-// gSineTable (src/trig.c), Q8.8, for the ported sprite callbacks that call Sin and Cos
-const sine = [...readFileSync(join(HERE, 'download', 'pret-anims', 'src', 'trig.c'), 'utf8').split('gSineTable[] =')[1].split('};')[0].matchAll(/Q_8_8\((-?[\d.]+)\)/g)].map((m) => Math.trunc(Number(m[1]) * 256));
-if (sine.length !== 320) throw new Error(`gSineTable has ${sine.length} entries, expected 320`);
-const data = { types: TYPES, species, moves, sprites, fonts, chars, colors, fa: frontAnims, hp: hpColors, se, sine, slot: { plain: slotColors('plain'), on: slotColors('on'), fnt: slotColors('fnt'), fntOn: slotColors('fntOn') } };
+// the battle screen's type names (gTypeNames, battle_main.c), per TYPES entry
+const typeNameTable = readFileSync(join(HERE, 'download', 'pret-anims', 'src', 'battle_main.c'), 'utf8').split('gTypeNames[')[1].split('};')[0];
+const gameTypes = Object.fromEntries([...typeNameTable.matchAll(/\[TYPE_(\w+)\] = _\("([^"]*)"\)/g)].map((m) => [m[1], m[2]]));
+const typeNames = TYPES.map((t) => gameTypes[t === '???' ? 'MYSTERY' : t.toUpperCase()] ?? t.toUpperCase());
+const data = { types: TYPES, species, moves, sprites, fonts, chars, colors, fa: frontAnims, hp: hpColors, se, typeNames, slot: { plain: slotColors('plain'), on: slotColors('on'), fnt: slotColors('fnt'), fntOn: slotColors('fntOn') } };
 const outputs = [
   ['battle-data.css', `.pkb-data { --pkb-data: "${b64(JSON.stringify(data))}"; }\n`],
   ['battle-ui.css', `.pkb-data { --pkb-ui: "${b64(JSON.stringify(ui))}"; }\n`],
@@ -410,46 +412,42 @@ function buildSoundTimelines() {
   return { n: names, a: scripts };
 }
 
-// The entrance animations: pokemon_animation.c's own sprite callbacks, compiled with clang against the engine stub
-// in tools/monanim and run once, record each ANIM_* frame by frame. Without clang the build reuses the committed
-// recording. Frames are [x2, y2, rotation, xScale, yScale, blend coeff, blend RGB555, invisible] with default
-// trailing values dropped; a number repeats the previous frame that many more times.
+// The entrance animations: the game's own sprite callbacks from the fetched pokemon_animation.c, compiled with
+// clang against the engine stub in tools/monanim and run once per build; nothing recorded is kept in the repo.
+// Frames are [x2, y2, rotation, xScale, yScale, blend coeff, blend RGB555, invisible] with default trailing values
+// dropped; a number repeats the previous frame that many more times.
 function buildMonAnims() {
   const TOOL = join(HERE, 'tools', 'monanim');
-  const RECORDED = join(TOOL, 'mon-anims.json');
   const A = join(HERE, 'download', 'pret-anims');
-  const probe = spawnSync('clang', ['--version'], { encoding: 'utf8' });
-  if (probe.status === 0) {
-    const out = join(TOOL, 'out');
-    mkdirSync(out, { recursive: true });
-    try {
-      const bin = join(out, 'mon_anim');
-      const cc = spawnSync('clang', ['-O1', '-w', `-I${join(TOOL, 'include')}`, `-I${join(A, 'include')}`, `-I${join(PE, 'include')}`, `-DPOKEMON_ANIMATION_C="${join(A, 'src', 'pokemon_animation.c')}"`, join(TOOL, 'mon_anim.c'), join(TOOL, 'engine.c'), join(A, 'src', 'trig.c'), '-o', bin], { encoding: 'utf8' });
-      if (cc.status !== 0) throw new Error(`monanim compile failed:\n${cc.stderr}`);
-      const run = spawnSync(bin, [], { encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
-      if (run.status !== 0) throw new Error(`monanim run failed: ${run.stderr || run.signal}`);
-      const DEFAULTS = [0, 0, 0, 256, 256, 0, 0, 0];
-      const packed = JSON.parse(run.stdout).map((frames) => {
-        const list = [];
-        let prev = null;
-        for (const [x2, y2, sx, sy, rot, coeff, color, inv] of frames) {
-          const frame = [x2, y2, rot, sx, sy, coeff, color, inv];
-          while (frame.length && frame[frame.length - 1] === DEFAULTS[frame.length - 1]) frame.pop();
-          const key = JSON.stringify(frame);
-          if (key === prev) {
-            if (typeof list[list.length - 1] === 'number') list[list.length - 1]++;
-            else list.push(1);
-          } else list.push(frame);
-          prev = key;
-        }
-        return list;
-      });
-      writeFileSync(RECORDED, `${JSON.stringify(packed)}\n`);
-    } finally {
-      rmSync(out, { recursive: true, force: true });
-    }
-  } else console.log('clang not found: reusing tools/monanim/mon-anims.json');
-  const frames = JSON.parse(readFileSync(RECORDED, 'utf8'));
+  const out = join(TOOL, 'out');
+  mkdirSync(out, { recursive: true });
+  let frames;
+  try {
+    const bin = join(out, 'mon_anim');
+    const cc = spawnSync('clang', ['-O1', '-w', `-I${join(TOOL, 'include')}`, `-I${join(A, 'include')}`, `-I${join(PE, 'include')}`, `-DPOKEMON_ANIMATION_C="${join(A, 'src', 'pokemon_animation.c')}"`, join(TOOL, 'mon_anim.c'), join(TOOL, 'engine.c'), join(A, 'src', 'trig.c'), '-o', bin], { encoding: 'utf8' });
+    if (cc.error) throw new Error('clang is needed to record the entrance animations: xcode-select --install');
+    if (cc.status !== 0) throw new Error(`monanim compile failed:\n${cc.stderr}`);
+    const run = spawnSync(bin, [], { encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+    if (run.status !== 0) throw new Error(`monanim run failed: ${run.stderr || run.signal}`);
+    const DEFAULTS = [0, 0, 0, 256, 256, 0, 0, 0];
+    frames = JSON.parse(run.stdout).map((recorded) => {
+      const list = [];
+      let prev = null;
+      for (const [x2, y2, sx, sy, rot, coeff, color, inv] of recorded) {
+        const frame = [x2, y2, rot, sx, sy, coeff, color, inv];
+        while (frame.length && frame[frame.length - 1] === DEFAULTS[frame.length - 1]) frame.pop();
+        const key = JSON.stringify(frame);
+        if (key === prev) {
+          if (typeof list[list.length - 1] === 'number') list[list.length - 1]++;
+          else list.push(1);
+        } else list.push(frame);
+        prev = key;
+      }
+      return list;
+    });
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
   const header = readFileSync(join(A, 'include', 'pokemon_animation.h'), 'utf8');
   const ids = Object.fromEntries([...header.matchAll(/#define ((?:BACK_)?ANIM_\w+)\s+(\d+)/g)].map((m) => [m[1], Number(m[2])]));
   const code = readFileSync(join(A, 'src', 'pokemon_animation.c'), 'utf8');
@@ -476,4 +474,120 @@ function buildMonAnims() {
   const nature = Object.fromEntries([...block(code, 'sBackAnimNatureModTable[NUM_NATURES] =').matchAll(/\[NATURE_(\w+)\]\s*=\s*(\d)/g)].map((m) => [m[1].toLowerCase(), Number(m[2])]));
   console.log(`mon anims ${frames.length}, front ${Object.keys(front).length}, back ${Object.keys(back).length}, back sets ${sets.length}`);
   return { f: frames, front, back, sets, nature };
+}
+
+// C source helpers for the recorders: a top-level definition by name, found by its opening line and its braces
+function cDefinition(text, name) {
+  const head = new RegExp(`^(?:static )?(?:const )?[\\w *]+?\\b${name}(?:\\[[^\\]]*\\])*(?:\\([^)]*\\))?\\s*=?\\s*\\n?\\{`, 'm').exec(text);
+  if (!head) throw new Error(`definition of ${name} not found`);
+  let depth = 0;
+  for (let i = head.index + head[0].length - 1; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) return text.slice(head.index, text[i + 1] === ';' ? i + 2 : i + 1);
+  }
+  throw new Error(`definition of ${name} has no end`);
+}
+
+// every definition the entry points reach in the given files, callees and tables before their users
+function cClosure(files, entries, skip) {
+  const defined = new Map();
+  for (const text of files)
+    for (const m of text.matchAll(/^(?:static )?(?:const )?[\w *]+?\b(\w+)(?:\[[^\]]*\])*(?:\([^)]*\))?\s*=?\s*\n\{/gm)) if (!defined.has(m[1])) defined.set(m[1], text);
+  const order = [];
+  const seen = new Set(skip);
+  const visit = (name) => {
+    if (seen.has(name) || !defined.has(name)) return;
+    seen.add(name);
+    const body = cDefinition(defined.get(name), name);
+    for (const id of new Set(body.match(/\b[A-Za-z_]\w*\b/g))) if (id !== name) visit(id);
+    order.push(body);
+  };
+  entries.forEach(visit);
+  const prototypes = order.filter((body) => /^[^=\n]*\)\s*\n\{/.test(body)).map((body) => `${body.split('\n')[0].trim()};`);
+  return `${prototypes.join('\n')}\n\n${order.join('\n\n')}\n`;
+}
+
+// The send-out: the game's own throw arc and ball-open particle callbacks, pulled out of the fetched sources,
+// compiled against tools/monanim's engine stub and run once per throw target and per ball; plus the release
+// timing read from the same sources. The page plays the recording and these numbers, nothing else.
+function buildSendOut(clang, tool) {
+  const A = join(HERE, 'download', 'pret-anims');
+  const read = (path) => readFileSync(join(A, path), 'utf8');
+  const pokeball = read('src/pokeball.c');
+  const mons = read('src/battle_anim_mons.c');
+  const throwC = read('src/battle_anim_throw.c');
+  const pick = (text, re, what) => {
+    const m = re.exec(text);
+    if (!m) throw new Error(`send-out: ${what} not found`);
+    return m;
+  };
+  const start = pick(pokeball, /case POKEBALL_PLAYER_SENDOUT:[\s\S]*?\.x = (\d+);[\s\S]*?\.y = (\d+);/, 'player ball start').slice(1, 3).map(Number);
+  // what tools/monanim/engine.c stands in for, never pulled from the game
+  const ENGINE_STUBS = ['GetBattlerSpriteCoord', 'GetBattlerAtPosition', 'IsDoubleBattle', 'StartSpriteAffineAnim', 'StartSpriteAnim', 'CreateSprite', 'CreateTask', 'DestroyTask', 'DestroySprite', 'DestroySpriteAndFreeResources', 'Sin', 'Cos'];
+  const TARGET_X = 72;
+  const TARGET_Y = [60, 130];
+  const out = join(tool, 'out');
+  mkdirSync(out, { recursive: true });
+  let recorded;
+  try {
+    const lines = (text, re) => [...text.matchAll(re)].map((m) => m[0]).join('\n');
+    const game = [
+      lines(read('include/pokeball.h'), /^enum\s*\{[\s\S]*?^\};/gm),
+      lines(pokeball, /^#define (sBattler|HIBYTE)\b.*$/gm),
+      lines(throwC, /^#define TAG_PARTICLES_\w+\s+\d+$/gm),
+      'static void SpriteCB_ReleaseMonFromBall(struct Sprite *sprite) {}',
+      'static void SpriteCB_ReleaseMon2FromBall(struct Sprite *sprite) {}',
+      'static void DestroyBallOpenAnimationParticle(struct Sprite *sprite) { DestroySprite(sprite); }',
+      cClosure([pokeball, mons], ['SpriteCB_PlayerMonSendOut_1', 'sAffineAnim_BallRotate'], ['SpriteCB_ReleaseMonFromBall', 'SpriteCB_ReleaseMon2FromBall', ...ENGINE_STUBS]),
+      cClosure([throwC], ['sBallParticleAnimationFuncs', 'sBallParticleAnimNums'], ['DestroyBallOpenAnimationParticle', 'gBattleAnimSpriteGfx_Particles', 'gBattleAnimSpritePal_CircleImpact', ...ENGINE_STUBS]),
+      // the catch shake the launcher ball repeats: its state enum, its macros and its two callbacks as written
+      pick(throwC, /^enum \{\s*BALL_ROLL_1,[\s\S]*?^\};/m, 'shake states')[0],
+      '#define SE_BALL 0\n#define BALL_3_SHAKES_SUCCESS 4',
+      'static void SpriteCB_Ball_Release(struct Sprite *sprite) {}',
+      'static void SpriteCB_Ball_Capture(struct Sprite *sprite) {}',
+      'static void SpriteCB_Ball_Wobble_Step(struct Sprite *sprite);',
+      (() => {
+        const from = pick(throwC, /^#define sTimer data\[3\]\n#define sState data\[3\]/m, 'shake start').index;
+        return throwC.slice(from, from + pick(throwC.slice(from), /^static void SpriteCB_Ball_Release\(struct Sprite \*sprite\)$/m, 'shake end').index);
+      })(),
+      '#define WOBBLE_START SpriteCB_Ball_Wobble',
+      '#define PLAYER_THROW_START SpriteCB_PlayerMonSendOut_1',
+      '#define BALL_ROTATION_TABLE sAffineAnim_BallRotate',
+      '#define PARTICLE_TASKS sBallParticleAnimationFuncs',
+    ].join('\n\n');
+    const gameFile = join(out, 'sendout_game.c');
+    writeFileSync(gameFile, game);
+    const bin = join(out, 'sendout_rec');
+    const cc = spawnSync(clang, ['-O1', '-w', `-I${join(tool, 'include')}`, `-I${join(A, 'include')}`, `-I${join(PE, 'include')}`, `-DSENDOUT_C="${gameFile}"`, join(tool, 'sendout_rec.c'), join(tool, 'engine.c'), join(A, 'src', 'trig.c'), '-o', bin], { encoding: 'utf8' });
+    if (cc.status !== 0) throw new Error(`send-out compile failed:\n${cc.stderr}`);
+    const run = spawnSync(bin, [start[0], start[1], TARGET_X, ...TARGET_Y].map(String), { encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+    if (run.status !== 0) throw new Error(`send-out run failed: ${run.stderr || run.signal}`);
+    recorded = JSON.parse(run.stdout);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+  const ballNames = [...pick(read('include/pokeball.h'), /enum\s*\{([\s\S]*?)POKEBALL_COUNT/, 'ball enum')[1].matchAll(/BALL_(\w+)/g)].map((m) => m[1].toLowerCase());
+  const fadeTable = pick(throwC, /gBallOpenFadeColors\[\] =\s*\{([\s\S]*?)\};/, 'ball fade colours')[1];
+  const tint = Object.fromEntries([...fadeTable.matchAll(/\[BALL_(\w+)\] = RGB\((\d+), (\d+), (\d+)\)/g)].map((m) => [m[1].toLowerCase(), [m[2], m[3], m[4]].map(Number)]));
+  const openSeq = [...pick(pokeball, /sBallAnimSeq1\[\] =\s*\{([\s\S]*?)\};/, 'ball open sequence')[1].matchAll(/ANIMCMD_FRAME\((\d+), (\d+)\)/g)].map((m) => [Number(m[1]) / 4, Number(m[2])]);
+  const emerge = [...pick(read('src/data.c'), /sAffineAnim_Battler_Emerge\[\] =\s*\{([\s\S]*?)\};/, 'emerge')[1].matchAll(/AFFINEANIMCMD_FRAME\((\w+), \w+, \d+, (\d+)\)/g)];
+  const fadeStep = Number(pick(read('src/palette.c'), /gPaletteFade\.deltaY = (\d+);/, 'palette fade step')[1]);
+  const fadeLast = Number(pick(cDefinition(throwC, 'Task_FadeMon_ToNormal_Step'), /tTimer <= (\d+)/, 'mon fade length')[1]);
+  const so = {
+    start,
+    targetX: TARGET_X,
+    path: recorded.throw,
+    particles: Object.fromEntries(ballNames.map((name, i) => [name, recorded.particles[i]])),
+    wobble: recorded.wobble,
+    ballBelow: Number(pick(cDefinition(pokeball, 'SpriteCB_PlayerMonSendOut_1'), /BATTLER_COORD_Y_PIC_OFFSET\) \+ (\d+);/, 'ball drop below the picture')[1]),
+    sparksAbove: Number(pick(cDefinition(pokeball, 'SpriteCB_ReleaseMonFromBall'), /AnimateBallOpenParticles\(sprite->x, sprite->y - (\d+)/, 'burst above the ball')[1]),
+    foeWait: Number(pick(cDefinition(pokeball, 'SpriteCB_OpponentMonSendOut'), /data\[0\] > (\d+)/, 'foe ball wait')[1]) + 1,
+    open: openSeq,
+    emerge: { from: Number(emerge[0][1]), step: Number(emerge[1][1]), frames: Number(emerge[1][2]) },
+    rise: { from: Number(pick(pokeball, /\.data\[1\] = (0x[\dA-F]+);/i, 'rise start')[1]), step: Number(pick(pokeball, /data\[1\] -= (\d+);/, 'rise step')[1]) },
+    tint: { colors: tint, hold: 16 / fadeStep + 2, frames: fadeLast + 1 },
+    slide: { from: Number(pick(cDefinition(pokeball, 'StartHealthboxSlideIn'), /x2 = (0x[\dA-F]+|\d+);/i, 'slide start')[1]), step: Number(pick(cDefinition(pokeball, 'StartHealthboxSlideIn'), /sSpeedX = (\d+);/, 'slide speed')[1]) },
+  };
+  console.log(`send-out: ${Object.keys(so.path).length} throw targets, ${ballNames.length} particle bursts`);
+  return so;
 }

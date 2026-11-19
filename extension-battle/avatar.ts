@@ -105,7 +105,7 @@ function wireLook(look: TrainerLook): { cls: number; name: string; palette: Arra
   return { cls: Math.max(0, trainerSheets().findIndex((t) => t.id === look.cls)), name: look.name, palette: look.palette.slice(0, 8) };
 }
 
-// partners publishes the recoloured player: --pkp-trainer (stand) and --pkp-trainer-walk (sAnim_GoSouth strip)
+// partners publishes the recoloured player: --pkp-trainer (stand) and --pkp-trainer-walk (the walking-south strip)
 const WALK_STEP_FRAMES = 8;
 const WALK_REST_FRAMES = 120;
 const walkers = new Set<HTMLElement>();

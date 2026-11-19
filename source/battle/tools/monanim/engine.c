@@ -18,7 +18,8 @@ void ObjAffineSet(struct ObjAffineSrcData *src, void *dest, s32 count, s32 offse
   gSimScale[2] = (s16)src->rotation;
 }
 
-// duration 0 sets the matrix outright, as the first frame of sMonAffineAnims does
+// duration 0 sets the matrix outright, as the first frame of sMonAffineAnims does; a sprite stepped with
+// AnimateAffine also restarts its own rotation, which the next step begins to change
 void StartSpriteAffineAnim(struct Sprite *sprite, u8 num) {
   const union AffineAnimCmd *cmd = &sprite->affineAnims[num][0];
   if (cmd->frame.duration == 0) {
@@ -27,7 +28,65 @@ void StartSpriteAffineAnim(struct Sprite *sprite, u8 num) {
     gSimScale[2] = cmd->frame.rotation << 8;
   }
   sprite->affineAnimEnded = TRUE;
+  sprite->affineNum = num;
+  sprite->affineIndex = 0;
+  sprite->affineDelay = 0;
+  sprite->affineRotation = 0;
+  sprite->affineBeginning = TRUE;
 }
+
+// one step of an affine command list for rotation: a frame command lasting n frames turns on each of them, the
+// first when it starts; a jump restarts at its target, an end stops; a paused sprite keeps its turn
+static void TurnByFrame(struct Sprite *sprite) {
+  const union AffineAnimCmd *cmd = &sprite->affineAnims[sprite->affineNum][sprite->affineIndex];
+  if (cmd->type == AFFINEANIMCMDTYPE_JUMP) {
+    sprite->affineIndex = cmd->jump.target;
+    cmd = &sprite->affineAnims[sprite->affineNum][sprite->affineIndex];
+  }
+  if (cmd->type == AFFINEANIMCMDTYPE_END) return;
+  if (cmd->frame.duration == 0) sprite->affineRotation = cmd->frame.rotation << 8;
+  else sprite->affineRotation += cmd->frame.rotation << 8;
+  sprite->affineDelay = cmd->frame.duration ? cmd->frame.duration - 1 : 0;
+}
+
+void AnimateAffine(struct Sprite *sprite) {
+  if (!sprite->affineAnims) return;
+  if (sprite->affineBeginning) {
+    sprite->affineBeginning = FALSE;
+    TurnByFrame(sprite);
+    return;
+  }
+  if (sprite->affineDelay) {
+    if (sprite->affineAnimPaused) return;
+    sprite->affineDelay--;
+    const union AffineAnimCmd *cmd = &sprite->affineAnims[sprite->affineNum][sprite->affineIndex];
+    sprite->affineRotation += cmd->frame.rotation << 8;
+    return;
+  }
+  if (sprite->affineAnimPaused) return;
+  sprite->affineIndex++;
+  TurnByFrame(sprite);
+}
+
+// switches the command list but keeps the turn so far
+void ChangeSpriteAffineAnim(struct Sprite *sprite, u8 num) {
+  sprite->affineNum = num;
+  sprite->affineIndex = 0;
+  sprite->affineDelay = 0;
+  sprite->affineBeginning = TRUE;
+  sprite->affineAnimEnded = FALSE;
+}
+
+void PlaySE(u16 song) {}
+
+struct SimBattleSprites *gBattleSpritesDataPtr;
+s16 gSimTarget[2];
+const struct OamData gOamData_AffineOff_ObjNormal_8x8;
+const union AffineAnimCmd *const gDummySpriteAffineAnimTable[] = { NULL };
+u8 GetBattlerSpriteCoord(u8 battler, u8 coord) { return (coord == BATTLER_COORD_X || coord == BATTLER_COORD_X_2) ? gSimTarget[0] : gSimTarget[1]; }
+bool8 IsDoubleBattle(void) { return FALSE; }
+u8 GetBattlerAtPosition(u8 position) { return position; }
+void DestroySpriteAndFreeResources(struct Sprite *sprite) { sprite->inUse = FALSE; }
 
 void InitSpriteAffineAnim(struct Sprite *sprite) {}
 void CalcCenterToCornerVec(struct Sprite *sprite, u8 shape, u8 size, u8 affineMode) {}
@@ -86,7 +145,7 @@ static void ApplyFrame(struct Sprite *sprite) {
   sprite->animDelayCounter = duration ? duration - 1 : 0;
 }
 
-// sprite.c BeginAnim / ContinueAnim for frame, jump and end commands
+// steps the frame animation of a sprite as the game does: frame, jump and end commands
 void AnimateSprite(struct Sprite *sprite) {
   if (!sprite->anims) return;
   if (sprite->animBeginning) {

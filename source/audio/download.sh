@@ -50,6 +50,7 @@ cat > "$DIR/.git/info/sparse-checkout" <<'PATTERNS'
 /sound/voicegroups/drumsets/*
 /sound/voicegroups/keysplits/*
 /src/battle_script_commands.c
+/src/battle_anim_sound_tasks.c
 /src/palette.c
 /src/pokemon.c
 PATTERNS

@@ -1,6 +1,7 @@
 #!/bin/sh
-# fetches the ball-open particle sheet and palette, the battle anim scripts (move SE timings), the mon entrance
-# animation code and the ball particle code for build-assets.mjs from the pinned pokeemerald commit
+# fetches what build-assets.mjs reads beyond the sparse graphics checkout: the ball-open particle sheet and
+# palette, the anim scripts (move sound timings), the entrance, throw, shake and particle code it records, and
+# the tables it reads, from the pinned pokeemerald commit
 # (personal use only, see extension-battle/SPRITES-NOTICE.txt)
 set -eu
 cd "$(dirname "$0")"
@@ -11,7 +12,9 @@ for name in particles circle_impact; do
   [ -s "$OUT/$name.png" ] || curl -fsSL -o "$OUT/$name.png" "$RAW/graphics/battle_anims/sprites/$name.png"
 done
 for path in data/battle_anim_scripts.s src/pokemon_animation.c include/pokemon_animation.h src/trig.c \
-  src/battle_anim_throw.c include/constants/pokemon.h include/constants/rgb.h; do
+  src/battle_anim_throw.c src/battle_anim_mons.c src/pokeball.c src/data.c src/palette.c src/battle_main.c \
+  include/pokeball.h \
+  include/constants/pokemon.h include/constants/rgb.h; do
   mkdir -p "$OUT/$(dirname "$path")"
   [ -s "$OUT/$path" ] || curl -fsSL -o "$OUT/$path" "$RAW/$path"
 done

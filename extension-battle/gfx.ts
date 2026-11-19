@@ -181,11 +181,11 @@ class Assets {
   }
 
   moveType(id: string, name: string): string {
-    // gTypeNames (battle_main.c) caps type names at 6 letters
-    const game = (type: string) => ({ FIGHTING: 'FIGHT', ELECTRIC: 'ELECTR', PSYCHIC: 'PSYCHC' })[upper(type)] ?? upper(type);
+    const data = this.data;
+    // the battle screen's own type names, which stop at 6 letters
+    const game = (type: string) => data?.typeNames?.[data.types.indexOf(type)] ?? upper(type);
     const hidden = /^Hidden Power (\w+)/.exec(name);
     if (hidden) return game(hidden[1]);
-    const data = this.data;
     const index = data?.moves[id] ?? data?.moves[toId(name)] ?? data?.moves[id.replace(/\d+$/, '')];
     return index === undefined || !data ? '???' : game(data.types[index]);
   }
@@ -270,7 +270,7 @@ class Assets {
         continue;
       }
       const code = this.code(ch);
-      // CopyGlyphToWindow copies only the glyph's advance width; columns past it hold the next glyph's pixels
+      // the game copies only a glyph's advance width; columns past it hold the next glyph's pixels
       const span = this.glyphSpan(font, code);
       if (sheet && span.w > 0) ctx.drawImage(sheet, (code % 16) * 16, Math.floor(code / 16) * 16, span.w, span.h, cx, y, span.w, span.h);
       ns.glyphLog?.push({ run, ch, font, x: cx, code, w: span.w, h: span.h });

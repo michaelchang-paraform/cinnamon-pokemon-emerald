@@ -275,6 +275,7 @@ const data = {
     scale: cArray('gScaleTable'),
     freq: cArray('gFreqTable'),
     delta: cArray('gDeltaEncodingTable'),
+    engine: engineData(),
   },
   songs: sfx.head.songs,
   sfx: { tones: sfx.head.tones, splits: sfx.head.splits, waves: sfx.head.waves, files: sfx.files, samples: sfx.samples, interface: SLICE, uses: sfxUses() },
@@ -495,6 +496,142 @@ function cryMode(sound, mode) {
   return out;
 }
 
+// every number the engine needs about the m4a driver, read from the fetched sources at build time so the extension
+// holds none of them: command and extended-command codes, the command dispatch, track defaults, the tempo unit,
+// mixer settings from m4aSoundInit, PSG envelope and register details, frequency lookup ranges, the cry song
+// layout and per-mode values, music ducking, fanfare lengths and the battle cry task schedule
+function engineData() {
+  const m4a = read('src/m4a.c');
+  const asm = read('src/m4a_1.s');
+  const tables = read('src/m4a_tables.c');
+  const header = read('include/gba/m4a_internal.h');
+  const sound = read('src/sound.c');
+  const tasks = read('src/battle_anim_sound_tasks.c');
+  const need = (text, re, what) => {
+    const m = text.match(re);
+    if (!m) throw new Error(`engine data: ${what} not found`);
+    return m;
+  };
+  const num = (s) => Number(s);
+  const defines = Object.fromEntries([...(header + tables).matchAll(/^#define\s+(\w+)\s+(0x[0-9a-fA-F]+|\d+)\b/gm)].map((m) => [m[1], num(m[2])]));
+  const play = equates(read('sound/MPlayDef.s'));
+
+  // dispatch: the template table plus MPlayExtender's replacements, from the first command code upward
+  const handlerNames = { ply_fine: 'end', ply_goto: 'jump', ply_patt: 'call', ply_pend: 'return', ply_rept: 'repeat', ply_memacc: 'memory', ply_prio: 'priority', ply_tempo: 'tempo', ply_keysh: 'transpose', ply_voice: 'instrument', ply_vol: 'volume', ply_pan: 'pan', ply_bend: 'bend', ply_bendr: 'bendRange', ply_lfos: 'lfoSpeed', ply_lfodl: 'lfoDelay', ply_mod: 'modDepth', ply_modt: 'modType', ply_tune: 'tune', ply_port: 'register', ply_xcmd: 'extended', ply_endtie: 'release' };
+  const template = need(tables, /gMPlayJumpTableTemplate\[\]\s*=\s*\{([^}]*)\}/, 'command table')[1].split(',').map((s) => s.trim()).filter(Boolean);
+  const extender = need(m4a, /void MPlayExtender[\s\S]*?#if[^\n]*\n([\s\S]*?)#else/, 'MPlayExtender')[1];
+  for (const m of extender.matchAll(/gMPlayJumpTable\[(\d+)\] = (\w+);/g)) template[num(m[1])] = m[2];
+  const first = num(need(asm, /subs r0, 0x(B1)\b/i, 'first command')[1].replace(/^/, '0x'));
+  const commands = {};
+  template.forEach((name, i) => {
+    if (handlerNames[name]) commands[first + i] = handlerNames[name];
+  });
+  const xNames = { ply_xxx: 'end', ply_xwave: 'waveAddress', ply_xtype: 'type', ply_xatta: 'attack', ply_xdeca: 'decay', ply_xsust: 'sustain', ply_xrele: 'releaseRate', ply_xiecv: 'echoVolume', ply_xiecl: 'echoLength', ply_xleng: 'length', ply_xswee: 'sweep', ply_xwait: 'wait', ply_xcmd_0D: 'progress' };
+  const xTable = need(tables, /gXcmdTable\[\]\s*=\s*\{([^}]*)\}/, 'extended command table')[1].split(',').map((s) => s.trim()).filter(Boolean);
+  const extended = Object.fromEntries(xTable.map((name, i) => [i, xNames[name]]));
+
+  // MPlayMain: command bytes, running status, the note commands, and a new track's defaults
+  const startBlock = need(asm, /bl Clear64byte([\s\S]*?)b _081DD938/, 'track start block')[1];
+  const field = (name) => num(need(startBlock, new RegExp(`movs r0, (0x[0-9a-fA-F]+)\\s*\\n\\s*(?:adds r1, r5, 0x6\\s*\\n\\s*)?strb r0, \\[r[15], o_MusicPlayerTrack_${name}`), name)[1]);
+  const trackDefaults = { bendRange: field('bendRange'), volX: field('volX'), lfoSpeed: field('lfoSpeed'), type: field('ToneData_type') };
+  const tempoUnit = num(need(asm, /cmp r0, (\d+)\s*\n\s*bcc _081DD9C4/, 'tempo unit')[1]);
+  const startTempo = num(need(m4a, /mplayInfo->tempoD = (\d+);/, 'start tempo')[1]);
+  const patternDepth = num(need(asm, /ply_patt:[\s\S]*?cmp r2, (\d+)/, 'pattern depth')[1]);
+
+  // m4aSoundInit's m4aSoundMode call, SampleFreqSet and SoundInit
+  const init = need(m4a, /void m4aSoundInit[\s\S]*?m4aSoundMode\(([\s\S]*?)\);/, 'm4aSoundInit')[1];
+  const masterVolume = num(need(init, /\((\d+) << SOUND_MODE_MASVOL_SHIFT\)/, 'master volume')[1]);
+  const channels = num(need(init, /\((\d+) << SOUND_MODE_MAXCHN_SHIFT\)/, 'channel count')[1]);
+  const freqName = need(init, /(SOUND_MODE_FREQ_\d+)/, 'mixer rate')[1];
+  const perFrameTable = need(tables, /gPcmSamplesPerVBlankTable\[\]\s*=\s*\{([^}]*)\}/, 'samples per frame')[1].split(',').map((s) => s.trim()).filter(Boolean).map(num);
+  const freqIndex = (defines[freqName] & 0xf0000) >> 16;
+  const samplesPerFrame = perFrameTable[freqIndex - 1];
+  const rateLine = need(m4a, /pcmFreq = \((\d+) \* soundInfo->pcmSamplesPerVBlank \+ (\d+)\) \/ (\d+);/, 'mixer rate formula');
+  const mixRate = Math.trunc((num(rateLine[1]) * samplesPerFrame + num(rateLine[2])) / num(rateLine[3]));
+  const divLine = need(m4a, /divFreq = \((\d+) \/ soundInfo->pcmFreq \+ (\d+)\) >> (\d+);/, 'step scale formula');
+  const stepScale = (Math.trunc(num(divLine[1]) / mixRate) + num(divLine[2])) >> num(divLine[3]);
+  const ringFrames = Math.trunc(defines.PCM_DMA_BUF_SIZE / samplesPerFrame);
+  const biasBase = num(need(m4a, /REG_SOUNDBIAS_H = \(REG_SOUNDBIAS_H & 0x3F\) \| (0x[0-9a-fA-F]+);/, 'PWM bias')[1]);
+  const daShift = need(m4a, /temp = \(temp & (0x[0-9a-fA-F]+)\) >> (\d+);/, 'DA bits');
+  const bias = (biasBase | ((defines.SOUND_MODE_DA_BIT_8 & num(daShift[1])) >> num(daShift[2]))) & 0xff;
+  const fixRules = [...m4a.matchAll(/dac_pwm_rate < (0x[0-9a-fA-F]+)\)[^\n]*\n\s*channels->frequency = \(channels->frequency \+ (\d+)\) & (0x[0-9a-fA-F]+);/g)].map((m) => ({ below: num(m[1]), add: num(m[2]), mask: num(m[3]) }));
+  const fix = fixRules.find((r) => bias < r.below) ?? { add: 0, mask: 0x7ff };
+
+  // PSG envelope bookkeeping in CgbSound and the PSG and sample frequency lookups
+  const psg = {
+    doubleStepEvery: num(need(m4a, /soundInfo->c15 = (\d+);/, 'envelope double step')[1]),
+    sustainHold: num(need(m4a, /envelopeCounter = (\d+);/, 'sustain hold')[1]),
+    fixAdd: fix.add,
+    fixMask: fix.mask,
+    noiseBelow: num(need(m4a, /if \(key <= (\d+)\)\s*\{\s*key = 0;\s*\}\s*else\s*\{\s*key -= \d+;/, 'noise key floor')[1]),
+    noiseBase: num(need(m4a, /key -= (\d+);\s*if \(key > \d+\)\s*key = \d+;\s*\}\s*return gNoiseTable/, 'noise key base')[1]),
+    noiseTop: num(need(m4a, /if \(key > (\d+)\)\s*key = \1;\s*\}\s*return gNoiseTable/, 'noise key top')[1]),
+    toneBelow: num(need(m4a, /if \(key <= (\d+)\)\s*\{\s*fineAdjust = 0;/, 'tone key floor')[1]),
+    toneBase: num(need(m4a, /key -= (\d+);\s*if \(key > \d+\)\s*\{\s*key = \d+;\s*fineAdjust = 255;/, 'tone key base')[1]),
+    toneTop: num(need(m4a, /if \(key > (\d+)\)\s*\{\s*key = \1;\s*fineAdjust = 255;/, 'tone key top')[1]),
+    registerOffset: num(need(m4a, /\(\(fineAdjust \* \(val2 - val1\)\) >> 8\) \+ (\d+);/, 'register offset')[1]),
+  };
+  const sampleKeyTop = num(need(m4a, /if \(key > (\d+)\)\s*\{\s*key = \1;\s*fineAdjustShifted/, 'sample key top')[1]);
+
+  // the cry song: PokemonCrySong's layout and gPokemonCrySongTemplate's values, from part0 to the end
+  const layout = need(header, /struct PokemonCrySong\s*\{([\s\S]*?)\};/, 'cry song layout')[1];
+  const fields = [];
+  let offset = 0;
+  for (const m of layout.matchAll(/^\s*(u8|u16|u32|s8|struct \w+ \*|u8 \*)\s*(\w+)(?:\[(\d+)\])?;/gm)) {
+    const size = m[1] === 'u16' ? 2 : m[1] === 'u32' || m[1].includes('*') ? 4 : 1;
+    offset = Math.ceil(offset / size) * size;
+    const count = m[3] ? num(m[3]) : 1;
+    fields.push({ name: m[2], offset, size, count });
+    offset += size * count;
+  }
+  const values = need(tables, /gPokemonCrySongTemplate\s*=\s*\{([\s\S]*?)\};/, 'cry song template')[1];
+  const symbols = { ...defines, ...play };
+  const bytes = new Array(offset).fill(0);
+  for (const m of values.matchAll(/\.(\w+)\s*=\s*([^,\n]+?|\{[^}]*\}),?\s*(?:\/\/[^\n]*)?\n/g)) {
+    const f = fields.find((x) => x.name === m[1]);
+    if (!f) continue;
+    const items = m[2].trim().startsWith('{') ? m[2].replace(/[{}]/g, '').split(',').map((s) => s.trim()).filter(Boolean) : [m[2].trim()];
+    items.forEach((item, i) => {
+      const v = /^\(|NULL/.test(item) ? 0 : evaluate(item, symbols);
+      for (let b = 0; b < f.size; b++) bytes[f.offset + i * f.size + b] = (v >> (8 * b)) & 0xff;
+    });
+  }
+  const at = (name) => fields.find((f) => f.name === name).offset;
+  const part0 = at('part0');
+  const cry = {
+    bytes: bytes.slice(part0),
+    tracks: [0, at('part1') - part0],
+    at: { tune: at('tuneValue') - part0, jump: at('gotoTarget') - part0, jumpTo: at('cont') - part0, tune2: at('tuneValue2') - part0, volume: at('volumeValue') - part0, progress: at('unkCmd0DParam') - part0, release: at('releaseValue') - part0, pan: at('panValue') - part0, key: at('tieKeyValue') - part0, length: at('length') - part0 },
+    center: defines.C_V,
+    // SetPokemonCryPitch keeps tuneValue2 - tuneValue from the template when there is no chorus
+    chorusGap: (bytes[at('tuneValue2')] - bytes[at('tuneValue')]) & 0x7f,
+  };
+
+  // PlayCry_ByMode's ducking (volX = volume / 4 of the default), sFanfares and the battle cry task schedule
+  const duckVolume = num(need(sound, /void PlayCry_ByMode[\s\S]*?m4aMPlayVolumeControl\(&gMPlayInfo_BGM, TRACKS_ALL, (\d+)\)/, 'cry ducking')[1]);
+  const duckDivisor = num(need(m4a, /track->volX = volume \/ (\d+);/, 'volume control divisor')[1]);
+  const fanfares = Object.fromEntries([...sound.matchAll(/\[FANFARE_\w+\]\s*=\s*\{\s*(MUS_\w+),\s*(\d+)\s*\}/g)].map((m) => [m[1], num(m[2])]));
+  const doubleCry = need(tasks, /static void SoundTask_PlayDoubleCry_Step[\s\S]*?data\[9\] < (\d+)/, 'double cry wait');
+  const echo = need(tasks, /static void SoundTask_PlayCryWithEcho_Step[\s\S]*?case (\d+):\s*PlayCry_DuckNoRestore\(species, pan, CRY_MODE_ECHO_START\)[\s\S]*?case (\d+):\s*if \(IsCryPlaying\(\)\)/, 'echo schedule');
+  return {
+    ops: { waitFirst: num(need(asm, /cmp r1, (0x80)\s*\n\s*bhs/, 'command flag')[1]), waitLast: num(need(asm, /cmp r1, (0xB0)\s*\n\s*bls/, 'last wait')[1]), noteFirst: num(need(asm, /cmp r1, (0xCF)\s*\n\s*bcc/, 'first note')[1]), runningFrom: num(need(asm, /cmp r1, (0xBD)\s*\n\s*bcc/, 'running status')[1]), center: defines.C_V },
+    commands,
+    extended,
+    trackDefaults,
+    tempoUnit,
+    startTempo,
+    patternDepth,
+    // stepScale is the CPU clock over the mixer rate in 1/2^fractionBits units: the sample position's fraction bits
+    mixer: { samplesPerFrame, mixRate, stepScale, masterVolume, channels, ringFrames, fractionBits: Math.log2(num(divLine[1])) - num(divLine[3]) },
+    psg,
+    sampleKeyTop,
+    cry,
+    duck: Math.trunc(duckVolume / duckDivisor) / trackDefaults.volX,
+    fanfares,
+    cryTasks: { doubleWait: num(doubleCry[1]) + 1, echoStart: num(echo[1]), echoCheckFrom: num(echo[2]) },
+  };
+}
+
 // cries: one wav2agb .bin per national dex number (audio_rules.mk flags), base64 in --pe-cry-<n>, packed in order
 function buildCries() {
   const names = [...read('include/constants/pokedex.h').matchAll(/^\s*NATIONAL_DEX_(\w+),/gm)].map((m) => m[1]).filter((n) => n !== 'NONE').slice(0, 386);
@@ -539,13 +676,26 @@ function buildCries() {
     if (!CHECK) writeFileSync(CRY_CSS(i + 1), css);
   });
   report.push(`cries: ${names.length}, ${total} B of wav2agb ${flags.join(' ')} data, ${files.length} CSS files`);
+  const base = { volume: constant('CRY_VOLUME'), pitch: def('pitch'), length: def('length'), release: def('release'), chorus: def('chorus'), reverse: false };
+  const engine = engineData();
+  const modeSong = (over) => {
+    const p = { ...base, ...over };
+    const rounded = (p.pitch + 0x80) & 0xffff;
+    const tune = (rounded >> 1) & 0x7f;
+    return { key: (rounded >> 8) & 0x7f, tune, tune2: ((p.chorus || engine.cry.chorusGap) + tune) & 0x7f, twoTracks: p.chorus !== 0, volume: p.volume & 0x7f, length: p.length, release: p.release, reverse: !!p.reverse };
+  };
+  const modeNames = ['WEAK', 'FAINT', 'DOUBLES', 'HIGH_PITCH', 'ECHO_START', 'ECHO_END', 'ROAR_1', 'ROAR_2', 'GROWL_1', 'GROWL_2'];
+  const songs = { normal: modeSong({}), ...Object.fromEntries(modeNames.map((m) => [m.toLowerCase(), modeSong(cryMode(sound, `CRY_MODE_${m}`))])) };
   return {
     files: files.length,
     keys,
+    songs,
     // PlayCryInternal defaults (CRY_MODE_NORMAL) and PlayCry_ByMode's volume and priority
     params: { volume: constant('CRY_VOLUME'), priority: constant('CRY_PRIORITY_NORMAL'), pan: 0, pitch: def('pitch'), length: def('length'), release: def('release'), chorus: def('chorus'), reverse: false, progress: 0, tone, toneReverse },
     // what PlayCryInternal's switch changes per mode (the weak, faint, battle animation and double-battle cries)
     modes: Object.fromEntries(['WEAK', 'FAINT', 'DOUBLES', 'HIGH_PITCH', 'ECHO_START', 'ECHO_END', 'ROAR_1', 'ROAR_2', 'GROWL_1', 'GROWL_2'].map((m) => [m.toLowerCase(), cryMode(sound, `CRY_MODE_${m}`)])),
+    // the bytes each mode writes into the cry song: SetPokemonCryPitch splits the pitch into a note (bits 8-14 after
+    // rounding by half a step) and a tune value (bits 1-7); SetPokemonCryChorus adds a second, detuned track
   };
 }
 

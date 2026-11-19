@@ -55,7 +55,7 @@ Pokemon is a trademark of Nintendo, Creatures Inc. and GAME FREAK inc. This proj
 - The Claude desktop app.
 - [Homebrew](https://brew.sh), to install Cinnamon.
 - Cinnamon. See "Install Cinnamon".
-- The Xcode Command Line Tools, for `git`, the C++ compiler and `clang`. The build compiles two sound tools and one animation recorder from pret/pokeemerald code. `build.sh` stops at the start if `clang` is not there.
+- The Xcode Command Line Tools, for `git`, the C++ compiler and `clang`. The build compiles two sound tools and two animation recorders from pret/pokeemerald code. `build.sh` stops at the start if `clang` is not there.
 - Node.js 18 or later, with `npm`. The battle helper is tested on Node.js 26.
 - Python 3 with the `fonttools`, `brotli` and `pillow` packages. `python3` comes with the Xcode Command Line Tools. "Build the assets" installs the packages at the versions of the tested build.
 - An internet connection. The build downloads approximately 100 MB.
@@ -143,7 +143,7 @@ The build takes 7 to 10 minutes. Most of that time is the download of approximat
 4. It writes `themes/pokemon-emerald.json`.
 5. It makes the list of the items that you can get in Emerald and writes the item icons.
 6. It compiles the two sound tools.
-7. It compiles the game's entrance animation code with `clang`, runs it one time to record each animation, and deletes the program.
+7. It compiles the game's entrance, ball throw and send-out animation code with `clang`. It runs each program one time to record the animations, and then deletes the programs.
 8. It writes the sprite, icon, battle, partner and sound data as CSS files in the extension folders.
 9. It makes sure that each file in each `manifest.json` exists.
 
@@ -503,9 +503,9 @@ The art is in `source/icons/glyphs.mjs` as text grids. `MATCH` connects each cod
 | `node source/sprites/build-sprites.mjs` | `extension-theme/sprites.css` |
 | `python3 source/sprites/item-list.py`, then `node source/sprites/build-items.mjs` | `source/sprites/items.json`, then `extension-theme/items.ts` and the four `items-*.css` files |
 | `node source/icons/build-icons.mjs` | `extension-icons/icons.css` |
-| `sh source/battle/fetch-anims.sh`, then `node source/battle/build-assets.mjs` | The eight `extension-battle/battle-*.css` files. It needs `source/sprites/download-balls.sh` first. It also writes the recording `source/battle/tools/monanim/mon-anims.json`, which Git ignores. |
+| `sh source/battle/fetch-anims.sh`, then `node source/battle/build-assets.mjs` | The eight `extension-battle/battle-*.css` files. It needs `source/sprites/download-balls.sh` first. `fetch-anims.sh` fetches the ball particles, the move animation scripts, the entrance, throw, ball and particle code, and the tables in `data.c`, `palette.c` and `battle_main.c`. `build-assets.mjs` compiles the recorders with `clang` in `source/battle/tools/monanim/out/` and deletes that folder after the recording. |
 | `node source/partners/build-assets.mjs` and `build-ui.mjs` | The six `extension-partners/partners-*.css` files |
-| `node source/audio/build-audio.mjs` | The `extension-audio/audio-*.css` files: sound effects, samples, cries and music |
+| `sh source/audio/download.sh`, then `node source/audio/build-audio.mjs` | The `extension-audio/audio-*.css` files: sound effects, samples, cries and music. `download.sh` fetches the sound data and the game code that sets the sound timings, for example `src/battle_anim_sound_tasks.c` for the battle cries. |
 
 Each `sync-live.sh` script under `source/` copies one built extension directly into `~/.config/claude-cinnamon/`. The scripts for the icons, partners, battle and audio extensions need Bun to measure the compiled page files. They refuse a page file larger than 55 KB after compilation and a CSS file larger than 500 KB.
 
@@ -525,6 +525,14 @@ The sound code has tests that run with Bun after the build.
 bun test source/audio/test
 ```
 
+The acceptance test compares each sound of the build with a recorded set of 3,345 hashes. See `source/audio/acceptance/README.md`.
+
+```bash
+bun source/audio/acceptance/run.ts
+```
+
+The battle extension has 14 page files, and `manifest.json` sets their order. `lines.ts` shows each line of the battle protocol on the battle screen. `screens.ts` draws the lobby, the result screen and the offline screen.
+
 `helper/test/claude-live.js` plays one battle against the real Claude. It costs money, and `npm test` does not run it.
 
 The extensions contain some QA code that does nothing until you start it. `extension-audio/qa.ts` runs only when the `qaRun` setting changes. `extension-battle/guard.ts` examines the battle screens for text that overlaps, on request. The partners extension has debug helpers at `__pkp.debug` in the page console.
@@ -536,4 +544,5 @@ The extensions contain some QA code that does nothing until you start it. `exten
 - Galmuri9 font: Lee Minseo (quiple), SIL Open Font License 1.1, from github.com/quiple/galmuri. The build makes a subset of it. See `extension-theme/Galmuri-OFL.txt`.
 - Game graphics, game fonts, sound data and move and ability texts: the pret/pokeemerald decompilation and the PokeAPI sprites repository. The build fetches them. See the `SPRITES-NOTICE.txt` and `AUDIO-NOTICE.txt` files in the extension folders.
 - Battle rules, stats, learnsets and the evolution table: the MIT-licensed `pokemon-showdown` package.
+- The move list in `source/audio/battle-moves.json`: the Gen 3 random battle sets of [Pokemon Showdown](https://github.com/smogon/pokemon-showdown) (`data/random-battles/gen3/sets.json`). Copyright 2011 to 2026 Guangcong Luo and other contributors, MIT License. The `pokemon-showdown` package in `helper/node_modules/` contains the license text.
 - The text box frames, the cursor and the pixel icons are new pixel art. The frames and the cursor come from `source/lib/png.mjs` and the icons from `source/icons/glyphs.mjs`.

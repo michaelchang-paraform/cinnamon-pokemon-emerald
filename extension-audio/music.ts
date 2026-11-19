@@ -15,8 +15,9 @@ const MUSIC_RATE = 32768;
 const CHUNK_FRAMES = 300;
 // music bus only: a gentle one-pole high-pass (-4.5 dB at 60 Hz, -2.2 dB at 100 Hz, -0.7 dB at 200 Hz)
 const MUSIC_HIGH_PASS_HZ = 80;
-// a fanfare cuts in over the battle music for its length in frames (sound.c sFanfares), then the music carries on
-const FANFARES = new Map<string, number>(Object.entries(musicLib.channel.FANFARE_FRAMES));
+// a fanfare cuts in over the battle music for its length in frames, then the music carries on
+// fanfares and their lengths in frames, from the build's data
+const fanfareFrames = (id: string): number | undefined => core.data()?.tables?.engine?.fanfares?.[id];
 // for a picker: each battle track with the victory track the game plays after a win (battle_main.c
 // HandleEndTurn_BattleWon by trainer class; battle_script_commands.c Cmd_getexp for wild battles)
 const MUSIC_LIST = [
@@ -38,8 +39,8 @@ let head: any = null;
 const samples: Record<string, unknown> = {};
 const prepared = new Map<string, Promise<Prepared>>();
 const done = new Map<string, Prepared>();
-// PlayCry_ByMode: m4aMPlayVolumeControl(BGM, 85) sets every track's volX to 85 / 4 = 21 of 64 until the cry ends
-const CRY_DUCK = Math.floor(85 / 4) / 64;
+// while a cry plays the music drops to the level the build read for cries (tables.engine.duck)
+const cryDuck = (): number => core.data()?.tables?.engine?.duck ?? 1;
 
 function emit(win: string, id: string | null, state: string, extra: Record<string, unknown> = {}): void {
   try {
@@ -79,7 +80,7 @@ function prepareMusic(idIn: string): Promise<Prepared> {
           if (!songData) throw new Error(`no music ${id}`);
           const song = { ...songData, tones: h.tones, splits: h.splits, waves: h.waves, samples };
           const data = core.data();
-          const loops = FANFARES.has(id) ? 0 : 2;
+          const loops = fanfareFrames(id) ? 0 : 2;
           const r = new musicLib.seq.Renderer(song, data.tables, MUSIC_RATE, 0.5 / 15, { stride: 4, loops, maxFrames: 60 * 400 });
           const next = () => {
             if (core.isDisposed()) return reject(new Error('disposed'));
@@ -92,7 +93,7 @@ function prepareMusic(idIn: string): Promise<Prepared> {
               musicLib.seq.highPass(res.samples, MUSIC_RATE, MUSIC_HIGH_PASS_HZ);
               const cut = loops ? musicLib.seq.loopCut(res, Math.round(MUSIC_RATE * 0.02)) : null;
               let pcm: Float32Array = cut ? cut.samples : res.samples;
-              const hold = Math.round(((FANFARES.get(id) ?? 0) / 59.7275) * MUSIC_RATE);
+              const hold = Math.round(((fanfareFrames(id) ?? 0) / 59.7275) * MUSIC_RATE);
               if (pcm.length < hold) {
                 const padded = new Float32Array(hold);
                 padded.set(pcm);
@@ -185,6 +186,7 @@ const channel = new musicLib.channel.MusicChannel({
     fading.clear();
   },
   emit: (win: string, id: string | null, state: string) => emit(win, id, state),
+  isFanfare: (id: string) => !!fanfareFrames(id),
 });
 
 function music(idIn: string, opts: MusicOptions = {}): void {
@@ -194,7 +196,7 @@ function music(idIn: string, opts: MusicOptions = {}): void {
 // MUS_LEVEL_UP or MUS_EVOLVED: pauses whatever music plays in any window, then lets it carry on; never queued
 function fanfare(idIn: string, opts: MusicOptions = {}): boolean {
   const id = musicId(idIn);
-  if (!FANFARES.has(id)) return false;
+  if (!fanfareFrames(id)) return false;
   return channel.playFanfare(id, core.windowName(opts.window, 'summary'));
 }
 
@@ -206,7 +208,7 @@ function stopMusic(opts: StopOptions = {}): void {
   }
 }
 
-// PlayCry_ByMode ducks the one music player, whichever window the cry is for
+// a cry lowers the one music channel, whichever window the cry is for
 core.onCry((_win: string, seconds: number) => {
   const p = current;
   const ctx = core.current();
@@ -215,8 +217,8 @@ core.onCry((_win: string, seconds: number) => {
   const now = ctx.currentTime;
   g.cancelScheduledValues(now);
   g.setValueAtTime(g.value, now);
-  g.linearRampToValueAtTime(CRY_DUCK, now + 0.01);
-  g.setValueAtTime(CRY_DUCK, now + seconds);
+  g.linearRampToValueAtTime(cryDuck(), now + 0.01);
+  g.setValueAtTime(cryDuck(), now + seconds);
   g.linearRampToValueAtTime(1, now + seconds + 0.01);
 });
 

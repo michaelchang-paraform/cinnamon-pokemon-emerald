@@ -4,7 +4,7 @@
 // window, and no AudioContext exists until a click or key press asks for a sound.
 declare const cinnamon: { onDispose(fn: () => void): void };
 
-// pan -1 (left) to 1 (right), as m4aMPlayPanpotControl's -64..63; pitch in semitones, as m4aMPlayPitchControl's
+// pan -1 (left) to 1 (right), the game's -64..63 pan range; pitch in semitones, applied in the sequencer in
 // 1/256-semitone steps
 type PlayOptions = { window?: string; pan?: number; pitch?: number; mode?: string };
 // windows with a mute toggle in the shared state: battle, summary, and chat (partners' cry on a finished reply)
@@ -211,7 +211,7 @@ function play(id: string, opts: PlayOptions = {}): boolean {
   }
 }
 
-// m4aSongNumStop: the game stops SE_EXP when the EXP bar is full; the channels go silent at once
+// cuts an effect at once (the game stops SE_EXP when the EXP bar is full)
 function stop(id: string, opts: PlayOptions = {}): void {
   const slot = `${windowName(opts.window, 'summary')}:${normalizeId(id)}`;
   try {
@@ -241,7 +241,7 @@ function readCry(dex: number): Uint8Array | null {
 const CRY_MODES = new Set(['normal', 'weak', 'faint', 'doubles', 'high_pitch', 'growl', 'roar', 'echo']);
 
 // mode: 'normal', 'weak' (status or HP bar yellow or red), 'faint', 'doubles' (double-battle send-out),
-// 'high_pitch' (PlayCryHighPitch), 'growl' and 'roar' (PlayDoubleCry) or 'echo' (PlayCryWithEcho)
+// 'high_pitch', 'growl' and 'roar' (the two-part cries of Growl, Roar and Howl) or 'echo' (Hyper Voice)
 function renderCry(dex: number, mode = 'normal'): Clip | null {
   const key = `${dex}:${mode}`;
   let clip = cries.get(key);
@@ -253,7 +253,7 @@ function renderCry(dex: number, mode = 'normal'): Clip | null {
   return clip;
 }
 
-// PlayCry_ByMode(species, 0, CRY_MODE_NORMAL); a new cry in the same window cuts the one still sounding
+// a new cry in the same window cuts the one still sounding
 function cry(species: number | string, opts: PlayOptions = {}): boolean {
   const win = windowName(opts.window, 'summary');
   const dex = data ? dexOf(species) : null;
@@ -266,7 +266,7 @@ function cry(species: number | string, opts: PlayOptions = {}): boolean {
     const clip = renderCry(dex, mode);
     // the game pans the release and faint cries to -25 (player side) or +25 (foe side) of -64..63
     entry.played = start(clip, win, `${win}:cry`, opts.pan);
-    // PlayCry_ByMode ducks the music except in CRY_MODE_DOUBLES
+    // every cry but the double-battle one lowers the music
     if (entry.played && clip && mode !== 'doubles') for (const fn of cryListeners) fn(win, clip.samples.length / RATE);
     return entry.played;
   } catch {
@@ -274,7 +274,7 @@ function cry(species: number | string, opts: PlayOptions = {}): boolean {
   }
 }
 
-// TrkVolPitSet's pan law for y = -64..63: right (y + 128) / 128, left (127 - y) / 127 of the centre level
+// a linear pan for y = -64..63: right (y + 128) / 128, left (127 - y) / 127 of the centre level
 function panNode(out: AudioNode, pan: number): AudioNode {
   const y = Math.max(-64, Math.min(63, Math.round(pan * 64)));
   const merger = ctx!.createChannelMerger(2);

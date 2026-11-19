@@ -26,10 +26,10 @@ type MonView = { root: HTMLElement; img: HTMLImageElement; ball: SVGSVGElement }
 type Spot = { x: number; y: number };
 
 const ns = (window as any).__pkb;
-const { TEXT_MS, HOLD_MS, HP_STEP_MS, BAR, POKEMON, rt, debugLog, report, later, cancelLater, sleep, el,
-   place, clamp, upper, moveText, monText, pixelArt, BALL, BALL_PAL, assets, canvasEl, imgEl, frameBox, parseLine, parseIdent, parseDetails, parseHp,
-   hpPx, effectName, STAT_NAMES, WEATHER_START, WEATHER_UPKEEP, WEATHER_END, WEATHER_ABILITY, damageLine,
-   healLine, statusLine, cantLine, sideLine, effectLine, cursorAt, peSound, WAIT } = ns;
+const { TEXT_MS, HOLD_MS, HP_STEP_MS, BAR, POKEMON, report, later, cancelLater, sleep, el, place, clamp, upper,
+  moveText, monText, pixelArt, BALL, BALL_PAL, assets, canvasEl, imgEl, frameBox, parseIdent, parseDetails,
+  parseHp, hpPx, effectName, STAT_NAMES, WEATHER_START, WEATHER_UPKEEP, WEATHER_END, WEATHER_ABILITY, damageLine,
+  healLine, statusLine, cantLine, sideLine, effectLine, cursorAt, peSound, WAIT } = ns;
 
 const STATUS_ROW: Record<string, number> = { psn: 0, tox: 0, par: 1, slp: 2, frz: 3, brn: 4 };
 const BAR_COLORS: Record<string, [string, string]> = { g: ['#5ad583', '#73ffac'], y: ['#cdac08', '#ffe639'], r: ['#ac414a', '#ff5a39'] };
@@ -290,223 +290,7 @@ class Battle {
   }
 
   private async handle(line: string): Promise<void> {
-    const { cmd, args, kw } = parseLine(line);
-    if (!['-damage', '-supereffective', '-resisted', '-crit'].includes(cmd)) await this.flushTexts();
-    const L = (ident?: string) => this.label(ident);
-    switch (cmd) {
-      case '':
-      case 't:':
-      case 'gametype':
-      case 'gen':
-      case 'tier':
-      case 'rule':
-      case 'upkeep':
-      case 'seed':
-      case 'rated':
-      case 'clearpoke':
-      case 'poke':
-      case 'teampreview':
-      case 'j':
-      case 'J':
-      case 'l':
-      case 'L':
-      case 'c':
-      case 'chat':
-      case 'raw':
-      case 'html':
-      case 'uhtml':
-      case 'inactive':
-      case 'inactiveoff':
-      case 'debug':
-      case '-hint':
-      case '-center':
-      case '-anim':
-      case '-mustrecharge':
-      case '-clearboost':
-      case '-clearnegativeboost':
-      case 'title':
-      case 'timestamp':
-        return;
-      case 'player':
-        if (args[0] === 'p1' || args[0] === 'p2') {
-          if (args[1]) this.sides[args[0]].trainer = args[1];
-        }
-        return;
-      case 'teamsize':
-        if (args[0] === 'p1' || args[0] === 'p2') this.sides[args[0]].size = clamp(Number(args[1]) || 6, 1, 6);
-        return;
-      case 'start':
-        await this.say(`${this.foeTrainer()} would like to battle!`);
-        return;
-      case 'switch':
-      case 'drag':
-      case 'replace':
-        await this.switchIn(cmd, args);
-        return;
-      case 'detailschange':
-      case '-formechange': {
-        const found = this.mon(args[0]);
-        if (found?.mon) {
-          found.mon.species = parseDetails(args[1]).species;
-          if (found.side.active === found.mon) this.setSprite(found.key, found.mon);
-          if (cmd === '-formechange' && kw.silent === undefined) await this.say(`${L(args[0])} transformed!`);
-        }
-        return;
-      }
-      case 'move': {
-        await this.say(`${L(args[0])} used ${moveText(args[1] ?? '')}!`, 250);
-        const p = parseIdent(args[0]);
-        if (!p || kw.still !== undefined || kw.miss !== undefined || kw.notarget !== undefined) return;
-        const target = parseIdent(args[2]);
-        const lead = this.fast ? 0 : this.sound.move(args[1] ?? '', this.key(p.side), target ? this.key(target.side) : null);
-        await this.lunge(this.key(p.side));
-        if (lead > 140) await this.wait(Math.min(lead, 3000) - 140);
-        return;
-      }
-      case '-damage':
-        await this.hpChange(args[0], args[1], kw, 'damage');
-        return;
-      case '-heal':
-        await this.hpChange(args[0], args[1], kw, 'heal');
-        return;
-      case '-sethp':
-        await this.hpChange(args[0], args[1], kw, 'set');
-        return;
-      case '-supereffective':
-        this.texts.push("It's super effective!");
-        this.effect = 'super';
-        return;
-      case '-resisted':
-        this.texts.push("It's not very effective...");
-        this.effect = 'weak';
-        return;
-      case '-crit':
-        this.texts.unshift('A critical hit!');
-        return;
-      case '-immune':
-        await this.say(`It doesn't affect ${L(args[0])}...`);
-        return;
-      case '-miss':
-        await this.say(`${L(args[0])}'s attack missed!`);
-        return;
-      case '-fail':
-        await this.say('But it failed!');
-        return;
-      case '-notarget':
-        await this.say('But there was no target...');
-        return;
-      case '-nothing':
-        await this.say('But nothing happened!');
-        return;
-      case '-ohko':
-        await this.say("It's a one-hit KO!");
-        return;
-      case '-hitcount':
-        await this.say(`Hit ${args[1]} time${args[1] === '1' ? '' : 's'}!`);
-        return;
-      case '-status':
-        await this.statusChange(args[0], args[1], kw, true);
-        return;
-      case '-curestatus':
-        await this.statusChange(args[0], args[1], kw, false);
-        return;
-      case '-cureteam': {
-        const found = this.mon(args[0]);
-        if (found) for (const mon of found.side.mons.values()) mon.status = mon.fainted ? 'fnt' : '';
-        this.syncBoxes();
-        await this.say('A bell chimed!');
-        return;
-      }
-      case '-boost':
-      case '-unboost':
-        await this.boost(cmd === '-boost', args, kw);
-        return;
-      case '-setboost':
-        await this.say(`${L(args[0])} cut its own HP and maximized ATTACK!`);
-        return;
-      case '-clearallboost':
-        await this.say('All stat changes were eliminated!');
-        return;
-      case '-weather':
-        await this.weatherChange(args[0], kw);
-        return;
-      case 'cant':
-        await this.cant(args);
-        return;
-      case 'faint':
-        await this.faint(args[0]);
-        return;
-      case '-start':
-      case '-end':
-      case '-activate':
-      case '-singleturn':
-      case '-singlemove':
-      case '-prepare':
-        await this.effectText(cmd, args, kw);
-        return;
-      case '-item':
-        if (kw.from === 'move: Trick') await this.say(`${L(args[0])} obtained ${upper(args[1] ?? '')}.`);
-        else if (/Thief|Covet/.test(kw.from ?? '')) await this.say(`${L(args[0])} stole ${upper(args[1] ?? '')}!`);
-        return;
-      case '-enditem': {
-        const item = upper(args[1] ?? '');
-        if (kw.from === 'move: Knock Off') await this.say(`${L(kw.of)} knocked off ${L(args[0])}'s ${item}!`);
-        else if (/BERRY$/.test(item) || kw.eat !== undefined) await this.say(`${L(args[0])} ate its ${item}!`);
-        else if (item === 'WHITE HERB') await this.say(`${L(args[0])}'s WHITE HERB restored its stats!`);
-        else if (item === 'MENTAL HERB') await this.say(`${L(args[0])} used its MENTAL HERB!`);
-        else if (!kw.from) await this.say(`${L(args[0])}'s ${item} was used up.`);
-        return;
-      }
-      case '-ability': {
-        const ability = effectName(args[1]);
-        if (kw.from === 'ability: Trace' && kw.of) await this.say(`${L(args[0])} TRACED ${L(kw.of)}'s ${upper(ability)}!`);
-        else if (ability === 'Pressure') await this.say(`${L(args[0])} is exerting its PRESSURE!`);
-        else if (!['Intimidate', 'Drizzle', 'Drought', 'Sand Stream'].includes(ability)) await this.say(`${L(args[0])}'s ${upper(ability)}!`);
-        return;
-      }
-      case '-transform': {
-        const target = parseIdent(args[1]);
-        await this.say(`${L(args[0])} transformed into ${target ? monText(target.name) : upper(args[1] ?? '')}!`);
-        return;
-      }
-      case '-sidestart':
-      case '-sideend':
-        await this.sideText(cmd === '-sidestart', args);
-        return;
-      case '-fieldstart':
-      case '-fieldend': {
-        const effect = effectName(args[0]);
-        if (cmd === '-fieldstart') await this.say(effect === 'Mud Sport' ? "Electricity's power was weakened!" : effect === 'Water Sport' ? "Fire's power was weakened!" : '');
-        else await this.say(`The effects of ${upper(effect)} faded.`);
-        return;
-      }
-      case '-message':
-      case 'message':
-        await this.say(args.join('|'));
-        return;
-      case 'turn':
-        this.turn = Number(args[0]) || this.turn;
-        this.app.renderBar();
-        return;
-      case 'win': {
-        const won = args[0] === this.sides[this.mySide].trainer || args[0] === this.myName;
-        this.sawWin = true;
-        this.sound.lowHp(0, 1);
-        if (this.mode === 'cpu') this.app.musicOutcome = won ? 'victory' : 'silent';
-        this.app.music.sync(this.app, won ? 0 : 1000);
-        await this.say(won ? `${upper(this.myName)} defeated ${this.foeTrainer()}!` : `${upper(this.myName)} lost to ${this.foeTrainer()}!`, 1200);
-        return;
-      }
-      case 'tie':
-        this.sawWin = true;
-        this.sound.lowHp(0, 1);
-        this.app.musicOutcome = 'silent';
-        this.app.music.sync(this.app, 1000);
-        await this.say('The battle ended in a draw!', 1200);
-        return;
-      default:
-        debugLog.unknown[cmd] = (debugLog.unknown[cmd] ?? 0) + 1;
-    }
+    await ns.handleLine(this, line);
   }
 
   private async switchIn(cmd: string, args: string[]): Promise<void> {
@@ -718,7 +502,7 @@ class Battle {
     if (row !== undefined && icons) ctx.drawImage(icons, 0, row * 8, 24, 8, me ? 16 : 8, me ? 24 : 16, 24, 8);
     const label = assets.image('hpbar');
     if (label && (me || row === undefined)) ctx.drawImage(label, 8, 0, 16, 8, barX - 16, 16, 16, 8);
-    // UpdateStatusIconInHealthbox: on the foe box the status icon takes the HP label's place and the bar keeps its frame end
+    // on the foe box the status icon takes the HP label's place and the bar keeps its frame end
     const frameEnd = assets.image('hbFrameEnd');
     if (frameEnd && !me && row !== undefined) ctx.drawImage(frameEnd, barX - 8, 16);
     const [dark, light] = BAR_COLORS[hpColor(px)];

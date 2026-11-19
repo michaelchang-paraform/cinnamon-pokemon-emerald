@@ -135,7 +135,7 @@ describe('sequencer', () => {
 describe('cries', () => {
   const render = (dex: number) => {
     const wave = new lib.ds.Wave(cryBins[dex], data.tables.delta);
-    return { wave, r: lib.seq.renderSong(lib.ds.crySong(data.cries.params, wave), data.tables, 48000, 0.5 / 15) };
+    return { wave, r: lib.seq.renderSong(lib.ds.crySong(data.cries.params, data.cries.songs.normal, wave, data.tables), data.tables, 48000, 0.5 / 15) };
   };
   test('all 386 cries are packed, with name keys', () => {
     expect(Object.keys(cryBins).length).toBe(386);
@@ -156,18 +156,18 @@ describe('cries', () => {
     const seconds = r.samples.length / 48000;
     expect(Math.abs(seconds - wave.size / 10512)).toBeLessThan(0.05);
   });
-  test('weak and faint cries: SetPokemonCryPitch(15000) and (14440) lower the key by 1.8125 and 3.1875 semitones', () => {
+  test('weak and faint cries: pitch settings 15000 and 14440 lower the key by 1.8125 and 3.1875 semitones', () => {
     const modes = data.cries.modes;
     expect(modes.weak).toEqual({ pitch: 15000 });
     expect(modes.faint).toEqual({ release: 200, pitch: 14440 });
     const wave = new lib.ds.Wave(cryBins[254], data.tables.delta);
-    const rate = (mode: string) => lib.seq.renderSong(lib.ds.crySong({ ...data.cries.params, ...modes[mode] }, wave), data.tables, 48000, 0.5 / 15).notes[0][2];
+    const rate = (mode: string) => lib.seq.renderSong(lib.ds.crySong(data.cries.params, data.cries.songs[mode], wave, data.tables), data.tables, 48000, 0.5 / 15).notes[0][2];
     expect(Math.abs(1200 * Math.log2(rate('weak') / 10512) + 181.25)).toBeLessThan(2);
     expect(Math.abs(1200 * Math.log2(rate('faint') / 10512) + 318.75)).toBeLessThan(2);
   });
   test('battle cry modes: chorus adds a detuned second track, growl and echo start with the sample reversed', () => {
     const wave = new lib.ds.Wave(cryBins[254], data.tables.delta);
-    const part = (mode: string) => lib.seq.renderSong(lib.ds.crySong({ ...data.cries.params, ...data.cries.modes[mode] }, wave), data.tables, 48000, 0.5 / 15);
+    const part = (mode: string) => lib.seq.renderSong(lib.ds.crySong(data.cries.params, data.cries.songs[mode], wave, data.tables), data.tables, 48000, 0.5 / 15);
     expect(part('high_pitch').notes.length).toBe(2);
     expect(part('echo_start').notes.length).toBe(2);
     expect(part('growl_1').notes.length).toBe(1);
@@ -180,7 +180,7 @@ describe('cries', () => {
   });
   test('growl and roar start their second cry the frame after the first song ends; echo cuts the first', () => {
     const wave = new lib.ds.Wave(cryBins[25], data.tables.delta);
-    const fine = (mode: string) => lib.seq.renderSong(lib.ds.crySong({ ...data.cries.params, ...data.cries.modes[mode] }, wave), data.tables, 48000, 0.5 / 15).fineFrame;
+    const fine = (mode: string) => lib.seq.renderSong(lib.ds.crySong(data.cries.params, data.cries.songs[mode], wave, data.tables), data.tables, 48000, 0.5 / 15).fineFrame;
     expect(fine('growl_1')).toBe(15);
     expect(fine('roar_1')).toBe(10);
     const growl = lib.seq.cryClip(wave, data.cries, data.tables, 'growl', 48000, 0.5 / 15);
@@ -269,6 +269,7 @@ describe('music channel', () => {
       stop: (fadeMs: number) => log.push(fadeMs ? `stop fade ${fadeMs}` : 'stop'),
       cutFading: () => log.push('cut fading'),
       emit: (w: string, id: string, state: string) => log.push(`${state} ${id}`),
+      isFanfare: (id: string) => id in data.tables.engine.fanfares,
     });
     return { t, log, ch, end: () => ended?.() };
   }

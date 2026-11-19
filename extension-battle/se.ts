@@ -1,7 +1,7 @@
 type Side = 'me' | 'foe';
 
 const ns = (window as any).__pkb;
-const { assets, toId } = ns;
+const { assets, toId, BAR } = ns;
 const FRAME_MS = 1000 / 59.7275;
 // effects the audio extension renders with a loop body; the game stops them when their animation ends
 const LOOPING = ['SE_M_GUST', 'SE_M_GUST2'];
@@ -17,6 +17,17 @@ const ACTIVATE_ANIM: Record<string, string> = { confusion: 's:Confusion', attrac
 const WEATHER_ANIM: Record<string, string> = { RainDance: 'g:Rain', SunnyDay: 'g:Sun', Sandstorm: 'g:Sandstorm', Hail: 'g:Hail' };
 
 const audio = () => (window as any).__peAudio;
+const SCREEN_PAN: Record<string, (p: number) => number> = {
+  'me>foe': (p) => p,
+  'me>me': (p) => (p === 63 || p === -64 ? -64 : -p),
+  'foe>me': (p) => -p,
+  'foe>foe': (p) => (p === -64 ? 63 : p),
+};
+
+// the bar's filled pixels, at least one while any HP is left
+function barPixels(hp: number, max: number): number {
+  return hp <= 0 ? 0 : Math.max(1, Math.floor((hp * BAR) / Math.max(1, max)));
+}
 
 // the battle window's sound effects: every id comes from the audio extension; one it lacks plays silence and is
 // kept in `missing` for the guard
@@ -59,16 +70,12 @@ class BattleSound {
     } catch {}
   }
 
-  // BattleAnimAdjustPanning for a single battle; a status animation keeps every effect on the afflicted side
+  // a script pans from the attacker's view (-64 its own side, 63 the other); this puts it on screen, where the
+  // player is left; an effect on its own mon stays on that side, and a status animation keeps all on it
   pan(raw: number, attacker: Side, target: Side, status = false): number {
-    let p = raw;
-    if (status) p = attacker === 'me' ? -64 : 63;
-    else if (attacker === 'me') {
-      if (target === 'me') p = p === 63 || p === -64 ? -64 : -p;
-    } else if (target === 'foe') {
-      if (p === -64) p = 63;
-    } else p = -p;
-    return Math.max(-64, Math.min(63, p)) / 64;
+    const own = attacker === 'me' ? -64 : 63;
+    const onScreen = status ? own : (SCREEN_PAN[`${attacker}>${target}`] ?? ((p: number) => p))(raw);
+    return Math.max(-64, Math.min(63, onScreen)) / 64;
   }
 
   // the effects of one anim script on its frame timings; resolves with the time the last one starts
@@ -99,7 +106,7 @@ class BattleSound {
     return this.script(charge ? `${id}@1` : id, user, target ?? user);
   }
 
-  // Cmd_effectivenesssound and the faint cry's SE, panned to the battler's side by its controller
+  // the hit and the faint sounds sit on the side of the mon they happen to
   hit(target: Side, effect: string | null): void {
     this.play(effect === 'super' ? 'SE_SUPER_EFFECTIVE' : effect === 'weak' ? 'SE_NOT_EFFECTIVE' : 'SE_EFFECTIVE', target === 'me' ? -1 : 63 / 64);
   }
@@ -108,7 +115,7 @@ class BattleSound {
     this.play('SE_FAINT', key === 'me' ? -1 : 63 / 64);
   }
 
-  // AnimTask_StatsChange plays this itself, panned to the battler whose stats change
+  // on the side of the mon whose stats change
   stat(key: Side, up: boolean): void {
     this.play(up ? 'SE_M_STAT_INCREASE' : 'SE_M_STAT_DECREASE', this.pan(-64, key, key));
   }
@@ -130,13 +137,13 @@ class BattleSound {
     if (anim) this.script(anim, key, key);
   }
 
-  // PlayCry_ByMode at the battler's side, the game's pan of 25 either way
+  // a send-out or faint cry, a little to the mon's side (25 of 64)
   cry(dex: number, key: Side, mode: 'normal' | 'weak' | 'faint'): void {
     this.cryAt(dex, (key === 'me' ? -25 : 25) / 64, mode);
   }
 
-  // a cry in one of PlayCry_ByMode's modes: normal, weak, faint, and from move scripts high_pitch, growl and roar
-  // (two-part) and echo
+  // a cry in one of the audio extension's modes: normal, weak, faint, and from move scripts high_pitch, growl,
+  // roar and echo
   private cryAt(dex: number, pan: number, mode: string): void {
     if (!audio() || !this.audible()) return;
     try {
@@ -144,21 +151,19 @@ class BattleSound {
     } catch {}
   }
 
-  // ShouldPlayNormalMonCry: a status or an HP bar at yellow or below makes the release cry weak
+  // a status, or an HP bar at half or less, makes the release cry weak
   cryMode(mon: { hp: number; maxhp: number; status?: string }): 'normal' | 'weak' {
-    const px = mon.hp <= 0 ? 0 : Math.max(1, Math.floor((mon.hp * 48) / Math.max(1, mon.maxhp)));
-    return mon.status || (mon.hp !== mon.maxhp && px <= 24) ? 'weak' : 'normal';
+    return mon.status || (mon.hp !== mon.maxhp && barPixels(mon.hp, mon.maxhp) <= BAR / 2) ? 'weak' : 'normal';
   }
 
-  // AnimateBallOpenParticles plays it unpanned, on a send-out and on a recall alike
+  // unpanned, on a send-out and on a recall alike
   ballOpen(): void {
     this.play('SE_BALL_OPEN');
   }
 
-  // HandleLowHpMusicChange: the player's mon in the red zone beeps until it leaves it
+  // the player's mon beeps while its bar is red (a fifth or less) and not empty
   lowHp(hp: number, max: number): void {
-    const px = hp <= 0 ? 0 : Math.max(1, Math.floor((hp * 48) / Math.max(1, max)));
-    this.lowWanted = hp > 0 && hp !== max && px <= 9;
+    this.lowWanted = hp > 0 && hp !== max && barPixels(hp, max) <= Math.floor(BAR / 5);
     this.sync();
   }
 

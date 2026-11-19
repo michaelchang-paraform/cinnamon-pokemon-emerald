@@ -12,9 +12,10 @@ type MenuItem = { label: string; disabled?: boolean; pick: () => void; cls?: str
 type Action = 'up' | 'down' | 'left' | 'right' | 'ok' | 'back';
 
 const ns = (window as any).__pkb;
-const { Battle, startCommand, NAME_MAX, POKEMON, LAUNCH_SELECTOR, NAV_SELECTOR, rt, report, timers, cleanups, listen, el, place,
-   clamp, upper, pixelArt, CLOSE_ART, SoundSettings, Link, savedName, cleanName, Menu,
-   WEATHER_LABEL, assets, canvasEl, frameBox, SettingsRow, WAIT, CURSOR_COL, writeBattleSound, peSound, playerLook, cleanLook, trainerCanvas, playerSprite, DEFAULT_LOOK, wireLook, parseClaude, claudeModel, claudeStats, opponentMenu, CLAUDE_LOOK, parsePeerAddress, peerHint, resultReason } = ns;
+const { Battle, NAME_MAX, POKEMON, rt, report, timers, cleanups, listen, el, place, clamp, upper, pixelArt,
+  CLOSE_ART, SoundSettings, Link, savedName, cleanName, Menu, WEATHER_LABEL, assets, canvasEl, frameBox,
+  SettingsRow, WAIT, writeBattleSound, peSound, playerLook, cleanLook, wireLook, parseClaude, claudeModel,
+  claudeStats, CLAUDE_LOOK, parsePeerAddress } = ns;
 const SPEAKER = ['...x....', '..xx..x.', 'xxxx.x.x', 'xxxx.x.x', 'xxxx.x.x', '..xx..x.', '...x....'];
 const SPEAKER_OFF = ['...x....', '..xx....', 'xxxx.x.x', 'xxxx..x.', 'xxxx.x.x', '..xx....', '...x....'];
 type FloatState = { x: number; y: number; w: number; h: number; dock: 'left' | 'right' | null; min: boolean };
@@ -712,64 +713,11 @@ class App {
   }
 
   private renderOffline(view: HTMLElement): void {
-    view.append(frameBox(8, 8, 224, 80));
-    view.append(this.txt('BATTLE HELPER OFFLINE', 8, 8), this.txt('Start it in its own Terminal tab:', 8, 24));
-    const code = place(el('div', 'pkb-code'), 8, 44, 224, 30);
-    const { command, local } = startCommand();
-    const lines: string[] = [];
-    let line = '';
-    for (const part of command.split(/(?<=\/)/)) {
-      if (line && assets.measure(line + part, 'small') > 216) {
-        lines.push(line);
-        line = part;
-      } else line += part;
-    }
-    lines.push(line);
-    if (!local && lines.length < 2) lines.push('in the folder of your clone');
-    code.append(place(assets.text(lines.join('\n'), { font: 'small', color: 'std', lineHeight: 13 }), 4, 2));
-    view.append(code);
-    this.msgBox(view, 8, 104, 128, 48, this.notice && Date.now() - this.noticeAt < 4000 ? this.notice : `Retrying${WAIT}`);
-    this.addMenu(this.menuBox(view, 152, 104, 80, 48), [
-      { label: 'RETRY', pick: () => this.link.retryNow() },
-      {
-        label: 'COPY',
-        pick: () => {
-          void navigator.clipboard?.writeText(command).then(
-            () => {
-              this.setNotice('Copied the command.');
-              this.render();
-            },
-            () => {},
-          );
-        },
-      },
-      { label: 'CLOSE', pick: () => this.close() },
-    ]);
+    ns.renderOffline(this, view);
   }
 
   private renderResult(view: HTMLElement): void {
-    const r = this.result;
-    view.append(frameBox(8, 8, 224, 80));
-    if (r) {
-      const head = assets.text(r.result === 'win' ? 'YOU WIN!' : r.result === 'loss' ? 'YOU LOST' : r.result === 'tie' ? 'DRAW' : 'BATTLE ENDED', { color: 'std' });
-      head.style.width = `calc(var(--u) * ${head.width * 2})`;
-      head.style.height = `calc(var(--u) * ${head.height * 2})`;
-      const foe = r.look ? trainerCanvas(cleanLook(r.look) ?? DEFAULT_LOOK) : null;
-      if (foe) view.append(place(foe, 214, 8));
-      view.append(place(head, 8, 6), this.txt(`VS ${upper(r.opponent)}${r.model ? ` (${r.model.toUpperCase()})` : ''}`, 8, 40), this.txt(resultReason(r), 8, 58, { font: 'small' }));
-      const stats = r.stats && cinnamon.settings.get('showClaudeStats') === true ? `   ${r.stats}` : '';
-      if (r.turns || stats) view.append(this.txt(`${r.turns} TURN${r.turns === 1 ? '' : 'S'}${stats}`, 8, 71, { font: 'small' }));
-    }
-    this.msgBox(view, 8, 104, 128, 48, this.notice && Date.now() - this.noticeAt < 6000 ? this.notice : 'Battle again?');
-    const box = this.menuBox(view, 152, 104, 80, 48);
-    if (this.prompt?.kind === 'incoming' || this.prompt?.kind === 'outgoing') {
-      this.renderPrompt(view);
-      return;
-    }
-    this.addMenu(box, [
-      { label: 'REMATCH', pick: () => this.rematch() },
-      { label: 'LOBBY', pick: () => this.toLobby() },
-    ]);
+    ns.renderResult(this, view);
   }
 
   private toLobby(): void {
@@ -806,123 +754,7 @@ class App {
   }
 
   private renderLobby(view: HTMLElement): void {
-    const menuBox = this.menuBox(view, 8, 8, 88, 96);
-    view.append(frameBox(112, 8, 120, 96));
-    const list = place(el('div', 'pkb-menubox pkb-clip'), 112, 56, 120, 48);
-    if (!this.panel) {
-      const avatar = playerSprite(playerLook() ?? DEFAULT_LOOK);
-      if (avatar) view.append(place(avatar, 112, 8));
-      const idNum = parseInt(this.trainer.id.slice(0, 8), 16);
-      const tid = Number.isFinite(idNum) ? String(idNum % 100000).padStart(5, '0') : '-----';
-      view.append(this.txt(assets.fit(upper(this.playerName()), 100), 132, 9), this.txt(`IDNo.${tid}`, 132, 25, { font: 'small', color: 'gray' }));
-      view.append(list, this.txt(this.peers.length ? `TRAINERS NEARBY (${this.peers.length})` : 'TRAINERS NEARBY', 112, 42, { font: 'small', color: 'gray' }));
-    }
-    const msg = this.msgBox(view, 8, 120, this.prompt && this.prompt.kind !== 'input' ? 152 : 224, 32, '');
-    const lan = this.lan.enabled;
-    const items: MenuItem[] = [
-      {
-        label: 'BATTLE CPU',
-        pick: () => {
-          this.panel = 'foe';
-          this.panelIndex = 0;
-          this.lobbyFocus = 'peers';
-          this.render();
-        },
-      },
-      { label: `SEEK: ${this.looking ? 'ON' : 'OFF'}`, disabled: !lan, pick: () => (lan ? this.toggleSeek() : this.lanOff()) },
-      { label: 'ADD BY IP', disabled: !lan, pick: () => (lan ? this.openInput('ip') : this.lanOff()) },
-      { label: 'TRAINER', pick: () => (playerLook() ? window.dispatchEvent(new CustomEvent('pe-open-trainer-customize')) : this.openInput('name')) },
-      { label: 'REFRESH', disabled: !lan, pick: () => this.refresh() },
-      {
-        label: 'OPTIONS',
-        pick: () => {
-          this.panel = 'options';
-          this.panelIndex = 0;
-          this.lobbyFocus = 'peers';
-          this.render();
-        },
-      },
-    ];
-    const hints = [
-      'Battle the CPU or CLAUDE with a random team.',
-      this.looking ? 'Trainers on your Wi-Fi see you looking for a battle.' : 'Show trainers on your Wi-Fi that you want to battle.',
-      "Add a trainer by IP when they don't show up.",
-      'Change your trainer and name.',
-      'Look for trainers again.',
-      'Auto open and music.',
-    ];
-    const modal = !!this.prompt;
-    const menu = this.addMenu(menuBox, items, {
-      index: this.lobbyIndex,
-      focused: !modal && this.lobbyFocus === 'menu',
-      onMove: (i) => {
-        this.lobbyIndex = i;
-        this.lobbyFocus = 'menu';
-        this.syncLobbyFocus();
-        if (!this.prompt) this.paintMsg(msg, hints[i] ?? '');
-      },
-    });
-    if (this.panel) {
-      const panel = this.panel === 'foe' ? { title: 'OPPONENT', ...opponentMenu(this, this.claude) } : ns[`${this.panel}Panel`](this);
-      this.panelHints = panel.hints;
-      this.panelIndex = clamp(this.panelIndex, 0, panel.items.length - 1);
-      const clip = place(el('div', 'pkb-menubox pkb-clip'), 112, 24, 120, 80);
-      const box = el('div', 'pkb-menubox');
-      clip.append(box);
-      view.append(clip, this.txt(panel.title, 112, 8, { font: 'small', color: 'gray' }));
-      this.addMenu(box, panel.items, {
-        index: this.panelIndex,
-        focused: !modal && this.lobbyFocus === 'peers',
-        onMove: (i) => {
-          this.panelIndex = i;
-          this.lobbyFocus = 'peers';
-          this.syncLobbyFocus();
-          box.style.transform = `translateY(calc(var(--u) * ${-clamp(i - 4, 0, Math.max(0, panel.items.length - 5)) * 16}))`;
-          if (this.panel === 'music') this.music.preview(this, panel.items[i]?.preview ?? null);
-          if (!this.prompt) this.paintMsg(msg, panel.hints[i] ?? '');
-        },
-      });
-      box.style.transform = `translateY(calc(var(--u) * ${-clamp(this.panelIndex - 4, 0, Math.max(0, panel.items.length - 5)) * 16}))`;
-    } else if (this.peers.length) {
-      const peerItems: MenuItem[] = this.peers.map((peer) => ({
-        label: assets.fit(upper(peer.name), 120 - CURSOR_COL - 18),
-        disabled: peer.status !== 'idle' && peer.status !== 'looking',
-        decorate: (row) => {
-          const head = trainerCanvas(cleanLook(peer.trainer) ?? DEFAULT_LOOK, 16);
-          const pip = el('span', 'pkb-pip');
-          pip.dataset.status = peer.status;
-          row.append(head ?? pip);
-        },
-        pick: () => this.challenge(peer),
-      }));
-      this.peerIndex = clamp(this.peerIndex, 0, this.peers.length - 1);
-      const inner = el('div', 'pkb-menubox');
-      list.append(inner);
-      this.addMenu(inner, peerItems, {
-        index: this.peerIndex,
-        focused: !modal && this.lobbyFocus === 'peers',
-        onMove: (i) => {
-          this.peerIndex = i;
-          this.lobbyFocus = 'peers';
-          this.syncLobbyFocus();
-          if (!this.prompt) this.paintMsg(msg, peerHint(this.peers[i]));
-        },
-      });
-      const start = clamp(this.peerIndex - 2, 0, Math.max(0, this.peers.length - 3));
-      inner.style.transform = `translateY(calc(var(--u) * ${-start * 16}))`;
-    } else {
-      this.lobbyFocus = 'menu';
-      menu.focused = !modal;
-      menu.paint();
-      list.append(place(assets.text(assets.wrap(!lan ? 'LAN is off. Start the helper without --no-lan.' : this.looking ? `No trainers yet. Waiting${WAIT}` : 'No trainers found. Turn SEEK on and ask a friend.', 'small', 116).join('\n'), { font: 'small', color: 'gray', lineHeight: 13 }), 0, 0));
-    }
-    if (this.prompt) {
-      this.renderPrompt(view, msg);
-      return;
-    }
-    const fresh = this.notice && Date.now() - this.noticeAt < 6000;
-    const side = this.panel ? this.panelHints[this.panelIndex] : this.peers[this.peerIndex] && peerHint(this.peers[this.peerIndex]);
-    this.paintMsg(msg, fresh ? this.notice : (this.lobbyFocus === 'peers' && side) || (hints[this.lobbyIndex] ?? ''));
+    ns.renderLobby(this, view);
   }
 
   playerName(): string {

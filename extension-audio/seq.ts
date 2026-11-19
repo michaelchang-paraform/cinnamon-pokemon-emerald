@@ -1,928 +1,725 @@
-// The m4a (MP2K) sound driver for one song: MPlayMain's sequencer (src/m4a_1.s), ply_note, TrkVolPitSet and
-// CgbSound (src/m4a.c), run once per GBA frame against the register model in apu.ts, plus the DirectSound channels
-// in ds.ts. Each song renders alone into a Float32Array, so channel priority against other players does not apply.
-const seqLib = ((window as any).__peaLib ??= {});
-const { Apu, FRAME_TICKS } = seqLib.apu;
-const { midiKeyToFreq, DsMixer, DS_SAMPLES } = seqLib.ds;
+// The song half of the pokemon-audio engine: the m4a sequencer (tracks, commands, notes, voice claims, level and
+// pitch), one Player per song driving the PSG driver and the DirectSound mixer, the Renderer that turns a Player into
+// browser-rate samples, and the clip helpers (loopCut, highPass, cryClip). Publishes window.__peaLib.seq.
+(() => {
+  const peaLib = (window as any).__peaLib;
+  const { TICK_HZ, FRAME_TICKS, Apu, PsgDriver, psgPitch } = peaLib.apu;
+  const { DsMixer, DsVoice, sampleRateFor, crySong, VOICE_BITS } = peaLib.ds;
+  const { NEW, KEY_OFF, PHASE, ACTIVE } = VOICE_BITS;
 
-type Tables = { clock: number[]; cgbScale: number[]; cgbFreq: number[]; noise: number[]; cgb3Vol: number[]; scale: number[]; freq: number[]; delta: number[] };
-// v maps a VOICE operand to its 12 ToneData bytes (effects, cries) or to an index in `tones` (music, where key split
-// and drumset voices reach further entries); s, w, g and k name a tone's sample, wave RAM image, group and split table
-type ToneRec = { b: number[]; s?: string; w?: string; g?: number; k?: string };
-type SongData = {
-  p: number;
-  r: number;
-  t: number[];
-  b?: string;
-  bytes?: Uint8Array;
-  v: Record<string, number[] | number | ToneRec>;
-  w?: Record<string, any>;
-  tones?: Record<string, ToneRec>;
-  splits?: Record<string, number[]>;
-  samples?: Record<string, any>;
-  waves?: Record<string, number[]>;
-  // m4aMPlayPitchControl: added to every track's pitch, in 1/256 semitones
-  pitX?: number;
-};
-type Tone = { type: number; key: number; length: number; panSweep: number; wav: number; attack: number; decay: number; sustain: number; release: number; rec?: ToneRec };
+  const s8 = (x: number) => ((x & 0xff) ^ 0x80) - 0x80;
+  const word = (b: ArrayLike<number>, at: number) => (b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24)) >>> 0;
 
-const SF_START = 0x80;
-const SF_STOP = 0x40;
-const SF_IEC = 0x04;
-const SF_ENV = 0x03;
-const SF_ON = SF_START | SF_STOP | SF_IEC | SF_ENV;
-const ENV_ATTACK = 3;
-const ENV_DECAY = 2;
-const ENV_SUSTAIN = 1;
-const ENV_RELEASE = 0;
-const MO_PIT = 2;
-const MO_VOL = 1;
-const FLG_VOLSET = 0x01;
-const FLG_VOLCHG = 0x03;
-const FLG_PITSET = 0x04;
-const FLG_PITCHG = 0x0c;
-const FLG_START = 0x40;
-const FLG_EXIST = 0x80;
-const TYPE_CGB = 0x07;
-const TYPE_FIX = 0x08;
-const ENV_INC = 0x08;
-// a song that never ends (a loop) stops here; interface sounds and cries end in under 3 seconds
-const MAX_FRAMES = 60 * 8;
-// SoundInfo.maxChans: m4aSoundMode(5 << SOUND_MODE_MAXCHN_SHIFT)
-const DS_CHANNELS = 5;
+  // any claimed voice, sampled (DsVoice) or Game Boy (PsgSlot)
+  type Voice = {
+    psg?: boolean;
+    state: number;
+    owner: number;
+    priority: number;
+    gate: number;
+    noteKey: number;
+    key: number;
+    velocity: number;
+    panOffset: number;
+    rightLevel: number;
+    leftLevel: number;
+    rate: number;
+    sample?: unknown;
+    pitchMark?: boolean;
+    levelMark?: boolean;
+  };
+  type ToneRecord = { b: number[]; s?: string; w?: string; g?: number; k?: string };
 
-const s8 = (v: number) => ((v & 0xff) ^ 0x80) - 0x80;
-const u8 = (v: number) => v & 0xff;
-
-function toneFrom(bytes: number[]): Tone {
-  return { type: bytes[0], key: bytes[1], length: bytes[2], panSweep: bytes[3], wav: bytes[4], attack: bytes[8], decay: bytes[9], sustain: bytes[10], release: bytes[11] };
-}
-
-class CgbChan {
-  sf = 0;
-  modify = 0;
-  type = 0;
-  key = 0;
-  midiKey = 0;
-  velocity = 0;
-  gate = 0;
-  priority = 0;
-  rightVolume = 0;
-  leftVolume = 0;
-  attack = 0;
-  decay = 0;
-  sustain = 0;
-  release = 0;
-  envVol = 0;
-  envGoal = 0;
-  sustainGoal = 0;
-  envCounter = 0;
-  echoVol = 0;
-  echoLen = 0;
-  length = 0;
-  sweep = 0;
-  wav: any = 0;
-  rhythmPan = 0;
-  frequency = 0;
-  n4 = 0;
-  track: Track | null = null;
-  // DirectSound only
-  wave: any = null;
-  count = 0;
-  pos = 0;
-  fw = 0;
-  loop = false;
-}
-
-class Track {
-  index = 0;
-  flags = 0;
-  ptr = 0;
-  wait = 0;
-  running = 0;
-  key = 0;
-  velocity = 0;
-  gate = 0;
-  priority = 0;
-  keyShift = 0;
-  tune = 0;
-  bend = 0;
-  bendRange = 2;
-  vol = 0;
-  volX = 0x40;
-  pan = 0;
-  volMR = 0;
-  volML = 0;
-  keyM = 0;
-  pitM = 0;
-  mod = 0;
-  modT = 0;
-  modM = 0;
-  lfoSpeed = 0x16;
-  lfoSpeedC = 0;
-  lfoDelay = 0;
-  lfoDelayC = 0;
-  repN = 0;
-  level = 0;
-  stack = [0, 0, 0];
-  echoVol = 0;
-  echoLen = 0;
-  timer = 0;
-  progress = 0;
-  wave: any = null;
-  tone: Tone = toneFrom([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-  chans = new Set<CgbChan>();
-
-  reset(): void {
-    const { ptr, index } = this;
-    Object.assign(this, new Track(), { ptr, index, flags: FLG_EXIST });
-  }
-}
-
-class Player {
-  readonly apu = new Apu();
-  readonly cgb = [new CgbChan(), new CgbChan(), new CgbChan(), new CgbChan()];
-  readonly ds = Array.from({ length: DS_CHANNELS }, () => new CgbChan());
-  // the last frame's DirectSound mix, one value per 13,379 Hz sample
-  readonly dsOut = new Float32Array(DS_SAMPLES);
-  readonly tracks: Track[];
-  readonly bytes: Uint8Array;
-  readonly voices: Record<string, number[] | number | ToneRec>;
-  readonly mixer: any;
-  // frames at which the first track jumped backwards (its loop GOTO)
-  readonly loops: number[] = [];
-  private waveLoaded: any = null;
-  tempoD = 150;
-  tempoI = 150;
-  tempoC = 0;
-  playing = true;
-  c15 = 0;
-  frames = 0;
-  endFrame = -1;
-  // the frame whose tick ran FINE on the last track; endFrame is when MPlayMain then finds no track left
-  fineFrame = -1;
-  // [frame, chan, frequency register] for each note start, for tests and QA
-  notes: [number, number, number][] = [];
-
-  constructor(readonly song: SongData, readonly tables: Tables) {
-    this.bytes = song.bytes ?? Uint8Array.from(atob(song.b ?? ''), (c) => c.charCodeAt(0));
-    this.voices = song.v;
-    this.tracks = song.t.map((ptr, index) => Object.assign(new Track(), { ptr, index, flags: FLG_EXIST | FLG_START }));
-    // MPlayStart: a header reverb byte with 0x80 set is passed to m4aSoundMode
-    this.mixer = new DsMixer(song.r & 0x80 ? song.r & 0x7f : 0);
+  class SongTrack {
+    alive = false;
+    pendingReset = false;
+    levelDirty = false;
+    pitchDirty = false;
+    wait = 0;
+    depth = 0;
+    readonly returns = [0, 0, 0];
+    repeatCount = 0;
+    gate = 0;
+    key = 0;
+    velocity = 0;
+    running = 0;
+    keyOffset = 0;
+    fraction = 0;
+    transpose = 0;
+    tune = 0;
+    bend = 0;
+    bendRange = 0;
+    rightOut = 0;
+    leftOut = 0;
+    volume = 0;
+    outsideVolume = 0;
+    pan = 0;
+    modValue = 0;
+    modDepth = 0;
+    modType = 0;
+    lfoSpeed = 0;
+    lfoPhase = 0;
+    lfoDelay = 0;
+    lfoHold = 0;
+    priority = 0;
+    echoVolume = 0;
+    echoLength = 0;
+    voice: number[] = new Array(12).fill(0);
+    record: ToneRecord | null = null;
+    instrument = 0;
+    extendedTimer = 0;
+    startOffset = 0;
+    pos = 0;
+    held: Voice[] = [];
+    constructor(readonly index: number) {}
   }
 
-  private byte(track: Track): number {
-    return this.bytes[track.ptr++];
-  }
+  const asRecord = (x: unknown): ToneRecord | null => {
+    if (x == null) return null;
+    if (Array.isArray(x) || ArrayBuffer.isView(x)) return { b: Array.from(x as ArrayLike<number>) };
+    return x as ToneRecord;
+  };
 
-  private word(at: number): number {
-    const b = this.bytes;
-    return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24);
-  }
+  // one song on its own sequencer, PSG driver, sampled voices and mixer
+  class Player {
+    readonly apu: any;
+    readonly driver: any;
+    readonly psg: Voice[];
+    readonly ds: Voice[];
+    readonly dsOut = new Int16Array(224);
+    readonly tracks: SongTrack[];
+    readonly loops: number[] = [];
+    readonly notes: number[][] = [];
+    frames = 0;
+    endFrame = -1;
+    fineFrame = -1;
+    playing = true;
+    private readonly bytes: Uint8Array;
+    private readonly mixer: any;
+    private readonly engine: any;
+    private readonly pitchOffset: number;
+    private baseTempo: number;
+    private tempoScale = 256;
+    private tempo: number;
+    private tempoAcc = 0;
+    private clock = 0;
 
-  // MPlayMain: the tempo accumulator runs whole ticks while it holds 150, then applies pending volume and pitch
-  frame(): void {
-    if (this.playing) {
-      this.tempoC += this.tempoI;
-      while (this.tempoC >= 150) {
-        let alive = false;
-        for (const track of this.tracks) {
-          if (!(track.flags & FLG_EXIST)) continue;
-          alive = true;
-          this.tick(track);
-        }
-        if (!alive) {
+    constructor(
+      private readonly song: any,
+      private readonly tables: any,
+    ) {
+      this.engine = tables.engine;
+      this.bytes = song.bytes ?? Uint8Array.from(atob(song.b), (c) => c.charCodeAt(0));
+      this.pitchOffset = song.pitX ?? 0;
+      this.baseTempo = this.tempo = this.engine.startTempo;
+      this.apu = new Apu();
+      this.driver = new PsgDriver(this.apu, tables);
+      this.psg = this.driver.slots;
+      this.ds = Array.from({ length: this.engine.mixer.channels }, () => new DsVoice());
+      this.mixer = new DsMixer(song.r & 0x80 ? song.r & 0x7f : 0, tables);
+      this.tracks = (song.t as number[]).map((start, i) => {
+        const t = new SongTrack(i);
+        t.alive = t.pendingReset = true;
+        t.pos = start;
+        return t;
+      });
+    }
+
+    get sounding(): boolean {
+      return this.playing || this.driver.sounding || this.ds.some((v) => (v.state & ACTIVE) !== 0) || this.apu.active;
+    }
+
+    frame(): void {
+      if (this.playing) this.sequence();
+      this.driver.frame();
+      this.mixer.frame(this.ds, this.dsOut);
+      this.frames++;
+    }
+
+    private sequence(): void {
+      const unit = this.engine.tempoUnit;
+      this.tempoAcc = (this.tempoAcc + this.tempo) & 0xffff;
+      while (this.tempoAcc >= unit) {
+        const anyAlive = this.tick();
+        this.clock++;
+        this.tempoAcc = (this.tempoAcc - unit) & 0xffff;
+        if (!anyAlive) {
           this.playing = false;
           this.endFrame = this.frames;
-          break;
+          return;
         }
-        this.tempoC -= 150;
       }
-      if (this.playing) for (const track of this.tracks) if (track.flags & FLG_EXIST && track.flags & (FLG_VOLCHG | FLG_PITCHG)) this.applyTrack(track);
+      for (const t of this.tracks) if (t.alive && (t.levelDirty || t.pitchDirty)) this.settle(t);
     }
-    this.cgbSound();
-    this.mixer.frame(this.ds, this.dsOut);
-    this.frames++;
-  }
 
-  private tick(track: Track): void {
-    for (const chan of track.chans) {
-      if (!(chan.sf & SF_ON)) {
-        track.chans.delete(chan);
-        continue;
-      }
-      if (chan.gate && --chan.gate === 0) chan.sf |= SF_STOP;
-    }
-    if (track.flags & FLG_START) {
-      track.reset();
-      if (this.song.pitX) track.flags |= FLG_PITCHG;
-    }
-    while (track.wait === 0 && track.flags & FLG_EXIST) {
-      let cmd = this.bytes[track.ptr];
-      if (cmd < 0x80) cmd = track.running;
-      else {
-        track.ptr++;
-        if (cmd >= 0xbd) track.running = cmd;
-      }
-      if (cmd >= 0xcf) this.note(track, cmd - 0xcf);
-      else if (cmd > 0xb0) this.command(track, cmd);
-      else track.wait = this.tables.clock[cmd - 0x80];
-    }
-    if (!(track.flags & FLG_EXIST)) return;
-    track.wait--;
-    if (track.lfoSpeed && track.mod) {
-      if (track.lfoDelayC) track.lfoDelayC--;
-      else {
-        track.lfoSpeedC = u8(track.lfoSpeedC + track.lfoSpeed);
-        const c = track.lfoSpeedC;
-        const tri = u8(c - 0x40) < 0x80 ? 0x80 - c : s8(c);
-        const m = (track.mod * tri) >> 6;
-        if (u8(track.modM ^ m)) {
-          track.modM = s8(m);
-          track.flags |= track.modT === 0 ? FLG_PITCHG : FLG_VOLCHG;
-        }
-      }
-    }
-  }
-
-  private command(track: Track, cmd: number): void {
-    const arg = () => this.byte(track);
-    switch (cmd) {
-      case 0xb2: {
-        const target = this.word(track.ptr);
-        if (track.index === 0 && target < track.ptr) this.loops.push(this.frames);
-        track.ptr = target;
-        break;
-      }
-      case 0xb3:
-        if (track.level >= 3) return this.fine(track);
-        track.stack[track.level++] = track.ptr + 4;
-        track.ptr = this.word(track.ptr);
-        break;
-      case 0xb4:
-        if (track.level) track.ptr = track.stack[--track.level];
-        break;
-      case 0xb5: {
-        const count = this.bytes[track.ptr];
-        if (count === 0) track.ptr = this.word(track.ptr + 1);
-        else if (++track.repN < count) track.ptr = this.word(track.ptr + 1);
-        else {
-          track.repN = 0;
-          track.ptr += 5;
-        }
-        break;
-      }
-      case 0xb9:
-        track.ptr += 3;
-        break;
-      case 0xba:
-        track.priority = arg();
-        break;
-      case 0xbb:
-        this.tempoD = arg() * 2;
-        this.tempoI = this.tempoD;
-        break;
-      case 0xbc:
-        track.keyShift = s8(arg());
-        track.flags |= FLG_PITCHG;
-        break;
-      case 0xbd: {
-        const index = arg();
-        const entry = this.voices[index];
-        // a voice no note of this song reaches is not in the data: keep it silent
-        const rec = typeof entry === 'number' ? this.song.tones?.[entry] : Array.isArray(entry) ? { b: entry } : entry;
-        track.tone = rec ? { ...toneFrom(rec.b), rec } : toneFrom([0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        track.wave = this.song.w?.[index] ?? null;
-        break;
-      }
-      case 0xbe:
-        track.vol = arg();
-        track.flags |= FLG_VOLCHG;
-        break;
-      case 0xbf:
-        track.pan = s8(arg() - 0x40);
-        track.flags |= FLG_VOLCHG;
-        break;
-      case 0xc0:
-        track.bend = s8(arg() - 0x40);
-        track.flags |= FLG_PITCHG;
-        break;
-      case 0xc1:
-        track.bendRange = arg();
-        track.flags |= FLG_PITCHG;
-        break;
-      case 0xc2:
-        track.lfoSpeed = arg();
-        if (!track.lfoSpeed) this.clearMod(track);
-        break;
-      case 0xc3:
-        track.lfoDelay = arg();
-        break;
-      case 0xc4:
-        track.mod = arg();
-        if (!track.mod) this.clearMod(track);
-        break;
-      case 0xc5: {
-        const t = arg();
-        if (track.modT !== t) {
-          track.modT = t;
-          track.flags |= FLG_VOLCHG | FLG_PITCHG;
-        }
-        break;
-      }
-      case 0xc8:
-        track.tune = s8(arg() - 0x40);
-        track.flags |= FLG_PITCHG;
-        break;
-      case 0xcc:
-        track.ptr += 2;
-        break;
-      case 0xcd:
-        this.xcmd(track);
-        break;
-      case 0xce: {
-        const key = this.bytes[track.ptr] < 0x80 ? (track.key = arg()) : track.key;
-        for (const chan of track.chans) {
-          if (chan.sf & (SF_START | SF_ENV) && !(chan.sf & SF_STOP) && chan.midiKey === key) {
-            chan.sf |= SF_STOP;
-            break;
+    private tick(): boolean {
+      let anyAlive = false;
+      for (const t of this.tracks) {
+        if (!t.alive) continue;
+        anyAlive = true;
+        for (const v of [...t.held]) {
+          if (v.state & ACTIVE && v.gate !== 0) {
+            v.gate = (v.gate - 1) & 0xff;
+            if (v.gate === 0) v.state |= KEY_OFF;
           }
+          if (!(v.state & ACTIVE)) this.detach(t, v);
         }
-        break;
+        if (t.pendingReset) this.reset(t);
+        if (!this.read(t)) continue;
+        t.wait--;
+        this.lfo(t);
       }
-      default:
-        this.fine(track);
+      return anyAlive;
     }
-  }
 
-  private xcmd(track: Track): void {
-    const sub = this.byte(track);
-    const arg = () => this.byte(track);
-    if (sub === 0x0d) {
-      track.progress = this.word(track.ptr) >>> 0;
-      track.ptr += 4;
-    } else if (sub === 0x01) track.ptr += 4;
-    else if (sub === 0x02) track.tone.type = arg();
-    else if (sub === 0x04) track.tone.attack = arg();
-    else if (sub === 0x05) track.tone.decay = arg();
-    else if (sub === 0x06) track.tone.sustain = arg();
-    else if (sub === 0x07) track.tone.release = arg();
-    else if (sub === 0x08) track.echoVol = arg();
-    else if (sub === 0x09) track.echoLen = arg();
-    else if (sub === 0x0a) track.tone.length = arg();
-    else if (sub === 0x0b) track.tone.panSweep = arg();
-    else if (sub === 0x0c) {
-      // ply_xwait: re-run this XCMD once a tick until the timer reaches the operand
-      const len = this.bytes[track.ptr] | (this.bytes[track.ptr + 1] << 8);
-      if (track.timer < len) {
-        track.timer++;
-        track.ptr -= 2;
-        track.wait = 1;
-      } else {
-        track.timer = 0;
-        track.ptr += 2;
+    private reset(t: SongTrack): void {
+      const fresh = new SongTrack(t.index);
+      const { pos, returns } = t;
+      Object.assign(t, fresh, { pos, returns });
+      const defaults = this.engine.trackDefaults;
+      t.alive = true;
+      t.bendRange = defaults.bendRange;
+      t.lfoSpeed = defaults.lfoSpeed;
+      t.voice[0] = defaults.type;
+      const known = new Set(['bendRange', 'lfoSpeed', 'type']);
+      t.outsideVolume = Object.entries<number>(defaults).find(([name]) => !known.has(name))?.[1] ?? 64;
+      if (this.pitchOffset) t.pitchDirty = true;
+    }
+
+    // reads commands until the track sets a wait; false when the track ended
+    private read(t: SongTrack): boolean {
+      const b = this.bytes;
+      const ops = this.engine.ops;
+      while (t.wait === 0) {
+        const at = t.pos;
+        let c = b[t.pos] ?? 0;
+        if (c < 0x80) c = t.running;
+        else {
+          t.pos++;
+          if (c >= ops.runningFrom) t.running = c;
+        }
+        if (c >= ops.waitFirst && c <= ops.waitLast) t.wait = this.tables.clock[c - ops.waitFirst];
+        else if (c >= ops.noteFirst) this.note(t, c);
+        else if (!this.command(t, c, at)) return false;
       }
-    } else this.fine(track);
-  }
-
-  private clearMod(track: Track): void {
-    track.modM = 0;
-    track.lfoSpeedC = 0;
-    track.flags |= track.modT === 0 ? FLG_PITCHG : FLG_VOLCHG;
-  }
-
-  // ply_fine: notes still sounding get STOP and release on their own; the track ends
-  private fine(track: Track): void {
-    for (const chan of track.chans) {
-      if (chan.sf & SF_ON) chan.sf |= SF_STOP;
-      chan.track = null;
+      return true;
     }
-    track.chans.clear();
-    track.flags = 0;
-    this.fineFrame = this.frames;
-  }
 
-  private trkVolPitSet(track: Track): void {
-    if (track.flags & FLG_VOLSET) {
-      let x = (track.vol * track.volX) >>> 5;
-      if (track.modT === 1) x = (x * (track.modM + 128)) >>> 7;
-      let y = 2 * track.pan;
-      if (track.modT === 2) y += track.modM;
+    private command(t: SongTrack, c: number, at: number): boolean {
+      const b = this.bytes;
+      const center = this.engine.ops.center;
+      const operand = () => b[t.pos++];
+      switch (this.engine.commands[c]) {
+        case 'jump': {
+          const target = word(b, t.pos);
+          if (t.index === 0 && target < t.pos) this.loops.push(this.frames);
+          t.pos = target;
+          return true;
+        }
+        case 'call':
+          if (t.depth >= this.engine.patternDepth) return this.finish(t);
+          t.returns[t.depth++] = t.pos + 4;
+          t.pos = word(b, t.pos);
+          return true;
+        case 'return':
+          if (t.depth > 0) t.pos = t.returns[--t.depth];
+          return true;
+        case 'repeat': {
+          const count = operand();
+          if (count === 0) t.pos = word(b, t.pos);
+          else if (++t.repeatCount < count) t.pos = word(b, t.pos);
+          else {
+            t.repeatCount = 0;
+            t.pos += 4;
+          }
+          return true;
+        }
+        case 'memory':
+          t.pos += 3;
+          return true;
+        case 'priority':
+          t.priority = operand();
+          return true;
+        case 'tempo':
+          this.baseTempo = 2 * operand();
+          this.tempo = (this.baseTempo * this.tempoScale) >> 8;
+          return true;
+        case 'transpose':
+          t.transpose = s8(operand());
+          t.pitchDirty = true;
+          return true;
+        case 'instrument':
+          this.instrument(t, operand());
+          return true;
+        case 'volume':
+          t.volume = operand();
+          t.levelDirty = true;
+          return true;
+        case 'pan':
+          t.pan = s8(operand() - center);
+          t.levelDirty = true;
+          return true;
+        case 'bend':
+          t.bend = s8(operand() - center);
+          t.pitchDirty = true;
+          return true;
+        case 'bendRange':
+          t.bendRange = operand();
+          t.pitchDirty = true;
+          return true;
+        case 'lfoSpeed':
+          t.lfoSpeed = operand();
+          if (t.lfoSpeed === 0) this.calm(t);
+          return true;
+        case 'lfoDelay':
+          t.lfoDelay = operand();
+          return true;
+        case 'modDepth':
+          t.modDepth = operand();
+          if (t.modDepth === 0) this.calm(t);
+          return true;
+        case 'modType': {
+          const kind = operand();
+          if (kind !== t.modType) {
+            t.modType = kind;
+            t.levelDirty = t.pitchDirty = true;
+          }
+          return true;
+        }
+        case 'tune':
+          t.tune = s8(operand() - center);
+          t.pitchDirty = true;
+          return true;
+        case 'register':
+          t.pos += 2;
+          return true;
+        case 'extended':
+          return this.extended(t, at);
+        case 'release':
+          this.releaseKey(t);
+          return true;
+        default:
+          return this.finish(t);
+      }
+    }
+
+    private extended(t: SongTrack, at: number): boolean {
+      const b = this.bytes;
+      const sub = b[t.pos++];
+      const operand = () => b[t.pos++];
+      switch (this.engine.extended[sub]) {
+        case 'waveAddress':
+          t.pos += 4;
+          return true;
+        case 'type':
+          t.voice[0] = operand();
+          return true;
+        case 'attack':
+          t.voice[8] = operand();
+          return true;
+        case 'decay':
+          t.voice[9] = operand();
+          return true;
+        case 'sustain':
+          t.voice[10] = operand();
+          return true;
+        case 'releaseRate':
+          t.voice[11] = operand();
+          return true;
+        case 'echoVolume':
+          t.echoVolume = operand();
+          return true;
+        case 'echoLength':
+          t.echoLength = operand();
+          return true;
+        case 'length':
+          t.voice[2] = operand();
+          return true;
+        case 'sweep':
+          t.voice[3] = operand();
+          return true;
+        case 'wait': {
+          const ticks = b[t.pos] | (b[t.pos + 1] << 8);
+          if (t.extendedTimer < ticks) {
+            t.extendedTimer++;
+            t.pos = at;
+            t.wait = 1;
+          } else {
+            t.extendedTimer = 0;
+            t.pos += 2;
+          }
+          return true;
+        }
+        case 'progress':
+          t.startOffset = word(b, t.pos);
+          t.pos += 4;
+          return true;
+        default:
+          return this.finish(t);
+      }
+    }
+
+    private instrument(t: SongTrack, n: number): void {
+      const raw = this.song.v?.[n];
+      const record = typeof raw === 'number' || typeof raw === 'string' ? asRecord(this.song.tones?.[raw]) : asRecord(raw);
+      t.instrument = n;
+      t.record = record;
+      t.voice = record ? record.b.slice(0, 12) : [0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+      while (t.voice.length < 12) t.voice.push(0);
+    }
+
+    // ends a track: its voices go to their release with no owner
+    private finish(t: SongTrack): false {
+      for (const v of t.held) {
+        if (v.state & ACTIVE) v.state |= KEY_OFF;
+        v.owner = -1;
+      }
+      t.held = [];
+      t.alive = false;
+      this.fineFrame = this.frames;
+      return false;
+    }
+
+    private calm(t: SongTrack): void {
+      t.modValue = 0;
+      t.lfoPhase = 0;
+      if (t.modType === 0) t.pitchDirty = true;
+      else t.levelDirty = true;
+    }
+
+    private lfo(t: SongTrack): void {
+      if (t.lfoSpeed === 0 || t.modDepth === 0) return;
+      if (t.lfoHold !== 0) {
+        t.lfoHold--;
+        return;
+      }
+      t.lfoPhase = (t.lfoPhase + t.lfoSpeed) & 0xff;
+      const p = t.lfoPhase;
+      const wave = p >= 64 && p <= 191 ? 128 - p : s8(p);
+      const m = (t.modDepth * wave) >> 6;
+      if ((m & 0xff) === (t.modValue & 0xff)) return;
+      t.modValue = s8(m);
+      if (t.modType === 0) t.pitchDirty = true;
+      else t.levelDirty = true;
+    }
+
+    // the oldest voice of this track still in a level stage or new, on the key
+    private releaseKey(t: SongTrack): void {
+      const b = this.bytes;
+      if (b[t.pos] < 0x80) t.key = b[t.pos++];
+      const hit = t.held.find((v) => !(v.state & KEY_OFF) && v.state & (NEW | PHASE) && v.noteKey === t.key);
+      if (hit) hit.state |= KEY_OFF;
+    }
+
+    private trackLevels(t: SongTrack): void {
+      let x = (t.volume * t.outsideVolume) >> 5;
+      if (t.modType === 1) x = (x * (t.modValue + 128)) >> 7;
+      let y = 2 * t.pan;
+      if (t.modType === 2) y += t.modValue;
       y = Math.max(-128, Math.min(127, y));
-      track.volMR = ((y + 128) * x) >>> 8;
-      track.volML = ((127 - y) * x) >>> 8;
+      t.rightOut = (((y + 128) * x) >> 8) & 0xff;
+      t.leftOut = (((127 - y) * x) >> 8) & 0xff;
     }
-    if (track.flags & FLG_PITSET) {
-      let x = (track.tune + track.bend * track.bendRange) * 4 + (track.keyShift << 8) + (this.song.pitX ?? 0);
-      if (track.modT === 0) x += 16 * track.modM;
-      track.keyM = x >> 8;
-      track.pitM = x & 0xff;
-    }
-    track.flags &= ~(FLG_PITSET | FLG_VOLSET);
-  }
 
-  private chnVolSet(chan: CgbChan, track: Track): void {
-    chan.rightVolume = Math.min(255, (chan.velocity * (0x80 + chan.rhythmPan) * track.volMR) >> 14);
-    chan.leftVolume = Math.min(255, (chan.velocity * (0x7f - chan.rhythmPan) * track.volML) >> 14);
-  }
+    private trackPitch(t: SongTrack): void {
+      let p = (t.tune + t.bend * t.bendRange) * 4 + t.transpose * 256 + this.pitchOffset;
+      if (t.modType === 0) p += 16 * t.modValue;
+      t.keyOffset = p >> 8;
+      t.fraction = p & 255;
+    }
 
-  private cgbFreq(chanNum: number, key: number, fine: number): number {
-    const { noise, cgbScale, cgbFreq } = this.tables;
-    if (chanNum === 4) return noise[key <= 20 ? 0 : Math.min(59, key - 21)];
-    if (key <= 35) {
-      fine = 0;
-      key = 0;
-    } else {
-      key -= 36;
-      if (key > 130) {
-        key = 130;
-        fine = 255;
-      }
+    private voiceLevels(v: Voice, t: SongTrack): void {
+      v.rightLevel = Math.min(255, (v.velocity * (128 + v.panOffset) * t.rightOut) >> 14);
+      v.leftLevel = Math.min(255, (v.velocity * (127 - v.panOffset) * t.leftOut) >> 14);
     }
-    const at = (k: number) => cgbFreq[cgbScale[k] & 0xf] >> (cgbScale[k] >> 4);
-    const a = at(key);
-    const b = at(key + 1);
-    return a + ((fine * (b - a)) >> 8) + 2048;
-  }
 
-  private note(track: Track, clockIndex: number): void {
-    track.gate = this.tables.clock[clockIndex];
-    if (this.bytes[track.ptr] < 0x80) {
-      track.key = this.byte(track);
-      if (this.bytes[track.ptr] < 0x80) {
-        track.velocity = this.byte(track);
-        if (this.bytes[track.ptr] < 0x80) track.gate += this.byte(track);
-      }
+    private retune(v: Voice, t: SongTrack, channel: number): number {
+      const key = Math.max(0, v.key + t.keyOffset);
+      return channel ? psgPitch(this.tables, channel, key, t.fraction) : sampleRateFor(this.tables, v.sample, key, t.fraction);
     }
-    let tone = track.tone;
-    let key = track.key;
-    let rhythmPan = 0;
-    if (tone.type & 0xc0) {
-      // key split: the split table picks the group entry; drumset: the note picks it, and plays at its base key
-      const rec = tone.rec;
-      if (!rec || rec.g === undefined) return;
-      const index = tone.type & 0x40 ? rec.g + (this.song.splits?.[rec.k ?? '']?.[track.key] ?? 0) : rec.g + track.key;
-      const subRec = this.song.tones?.[index];
-      if (!subRec) return;
-      const sub: Tone = { ...toneFrom(subRec.b), rec: subRec };
-      if (sub.type & 0xc0) return;
-      if (tone.type & 0x80) {
-        if (sub.panSweep & 0x80) rhythmPan = s8((sub.panSweep - 0xc0) * 2);
-        key = sub.key;
-      }
-      tone = sub;
-    }
-    const priority = Math.min(255, track.priority + this.song.p);
-    const num = tone.type & TYPE_CGB;
-    if (!num) return this.dsNote(track, tone, key, rhythmPan, priority);
-    const chan = this.cgb[num - 1];
-    // ply_note: a sounding CGB channel of higher priority, or equal priority from an earlier track, keeps playing
-    if (chan.sf & SF_ON && !(chan.sf & SF_STOP)) {
-      if (chan.priority > priority) return;
-      if (chan.priority === priority && chan.track && chan.track.index < track.index) return;
-    }
-    chan.track?.chans.delete(chan);
-    track.chans.add(chan);
-    chan.track = track;
-    track.lfoDelayC = track.lfoDelay;
-    if (track.lfoDelay) this.clearMod(track);
-    this.trkVolPitSet(track);
-    chan.gate = track.gate;
-    chan.midiKey = track.key;
-    chan.velocity = track.velocity;
-    chan.priority = priority;
-    chan.key = key;
-    chan.rhythmPan = rhythmPan;
-    chan.type = tone.type;
-    chan.wav = num === 3 ? (this.song.waves?.[tone.rec?.w ?? ''] ?? null) : tone.wav;
-    chan.attack = tone.attack;
-    chan.decay = tone.decay;
-    chan.sustain = tone.sustain;
-    chan.release = tone.release;
-    chan.echoVol = track.echoVol;
-    chan.echoLen = track.echoLen;
-    this.chnVolSet(chan, track);
-    chan.length = tone.length;
-    chan.sweep = tone.panSweep & 0x80 || !(tone.panSweep & 0x70) ? 8 : tone.panSweep;
-    chan.frequency = this.cgbFreq(num, Math.max(0, chan.key + track.keyM), track.pitM);
-    chan.sf = SF_START;
-    track.flags &= 0xf0;
-    this.notes.push([this.frames, num, chan.frequency]);
-  }
 
-  // ply_note's DirectSound half: a free channel, else the stopping one, else the lowest priority (ties go to the
-  // latest track at or after this one)
-  private pickDs(track: Track, priority: number): CgbChan | null {
-    let best: CgbChan | null = null;
-    let pri = priority;
-    let idx = track.index;
-    let stopping = false;
-    for (const c of this.ds) {
-      if (!(c.sf & SF_ON)) return c;
-      const cIdx = c.track ? c.track.index : -1;
-      if (c.sf & SF_STOP) {
-        if (!stopping) {
-          stopping = true;
-          pri = c.priority;
-          idx = cIdx;
-          best = c;
+    // end-of-frame pass (8.4)
+    private settle(t: SongTrack): void {
+      if (t.levelDirty) this.trackLevels(t);
+      if (t.pitchDirty) this.trackPitch(t);
+      for (const v of [...t.held]) {
+        if (!(v.state & ACTIVE)) {
+          this.detach(t, v);
           continue;
         }
-      } else if (stopping) continue;
-      if (c.priority < pri) {
-        pri = c.priority;
-        idx = cIdx;
-        best = c;
-      } else if (c.priority === pri && cIdx >= idx) {
-        idx = cIdx;
-        best = c;
-      }
-    }
-    return best;
-  }
-
-  private dsNote(track: Track, tone: Tone, key: number, rhythmPan: number, priority: number): void {
-    const wave = tone.rec?.s ? this.song.samples?.[tone.rec.s] : track.wave;
-    if (!wave) return;
-    const chan = this.pickDs(track, priority);
-    if (!chan) return;
-    chan.track?.chans.delete(chan);
-    track.chans.add(chan);
-    chan.track = track;
-    track.lfoDelayC = track.lfoDelay;
-    if (track.lfoDelay) this.clearMod(track);
-    this.trkVolPitSet(track);
-    chan.gate = track.gate;
-    chan.midiKey = track.key;
-    chan.velocity = track.velocity;
-    chan.priority = priority;
-    chan.key = key;
-    chan.rhythmPan = rhythmPan;
-    chan.type = tone.type;
-    chan.wave = wave;
-    chan.attack = tone.attack;
-    chan.decay = tone.decay;
-    chan.sustain = tone.sustain;
-    chan.release = tone.release;
-    chan.echoVol = track.echoVol;
-    chan.echoLen = track.echoLen;
-    chan.count = track.progress;
-    this.chnVolSet(chan, track);
-    chan.frequency = midiKeyToFreq(this.tables, chan.wave, Math.max(0, chan.key + track.keyM), track.pitM);
-    chan.sf = SF_START;
-    track.flags &= 0xf0;
-    this.notes.push([this.frames, 0, chan.frequency]);
-  }
-
-  // the end of MPlayMain: pending volume and pitch changes reach every channel the track owns
-  private applyTrack(track: Track): void {
-    this.trkVolPitSet(track);
-    for (const chan of track.chans) {
-      if (!(chan.sf & SF_ON)) {
-        track.chans.delete(chan);
-        continue;
-      }
-      const cgb = (chan.type & TYPE_CGB) !== 0;
-      if (track.flags & FLG_VOLCHG) {
-        this.chnVolSet(chan, track);
-        if (cgb) chan.modify |= MO_VOL;
-      }
-      if (track.flags & FLG_PITCHG) {
-        const key = Math.max(0, chan.key + track.keyM);
-        if (cgb) {
-          chan.frequency = this.cgbFreq(chan.type & TYPE_CGB, key, track.pitM);
-          chan.modify |= MO_PIT;
-        } else chan.frequency = midiKeyToFreq(this.tables, chan.wave, key, track.pitM);
-      }
-    }
-    track.flags &= 0xf0;
-  }
-
-  // CgbModVol in mono mode (Emerald's default sound option sets SoundInfo.mode bit 0): no pan, no clamp at 15
-  private modVol(chan: CgbChan): void {
-    chan.envGoal = ((chan.leftVolume + chan.rightVolume) >> 4) & 0xff;
-    chan.sustainGoal = (chan.envGoal * chan.sustain + 15) >> 4;
-  }
-
-  // CgbSound, label for label: the software envelope that mirrors the hardware's 64 Hz steps, then register writes
-  private cgbSound(): void {
-    this.c15 = this.c15 ? this.c15 - 1 : 14;
-    for (let ch = 1; ch <= 4; ch++) {
-      const c = this.cgb[ch - 1];
-      if (!(c.sf & SF_ON)) continue;
-      const hw = this.apu.ch[ch - 1];
-      let prevC15 = this.c15;
-      let envStep = hw.nr2;
-      let at: string;
-      if (c.sf & SF_START) {
-        if (!(c.sf & SF_STOP)) {
-          c.sf = ENV_ATTACK;
-          c.modify = MO_PIT | MO_VOL;
-          this.modVol(c);
-          if (ch <= 2) {
-            if (ch === 1) this.apu.write(1, 0, c.sweep);
-            this.apu.write(ch, 1, (c.wav << 6) + c.length);
-            envStep = c.attack + ENV_INC;
-            c.n4 = c.length ? 0x40 : 0;
-          } else if (ch === 3) {
-            if (c.wav !== this.waveLoaded) {
-              this.apu.write(3, 0, 0x40);
-              this.apu.setWave(c.wav);
-              this.waveLoaded = c.wav;
-            }
-            this.apu.write(3, 0, 0);
-            this.apu.write(3, 1, c.length);
-            c.n4 = c.length ? 0xc0 : 0x80;
-          } else {
-            this.apu.write(4, 1, c.length);
-            this.apu.write(4, 3, c.wav << 3);
-            envStep = c.attack + ENV_INC;
-            c.n4 = c.length ? 0x40 : 0;
-          }
-          c.envCounter = c.attack;
-          if (s8(c.attack)) {
-            c.envVol = 0;
-            at = 'step_complete';
-          } else at = 'decay_start';
-        } else at = 'osc_off';
-      } else if (c.sf & SF_IEC) {
-        c.echoLen = u8(c.echoLen - 1);
-        at = s8(c.echoLen) <= 0 ? 'osc_off' : 'env_complete';
-      } else if (c.sf & SF_STOP && c.sf & SF_ENV) {
-        c.sf &= ~SF_ENV;
-        c.envCounter = c.release;
-        if (s8(c.release)) {
-          c.modify |= MO_VOL;
-          if (ch !== 3) envStep = c.release;
-          at = 'step_complete';
-        } else at = 'echo_start';
-      } else at = 'step_repeat';
-
-      for (;;) {
-        if (at === 'step_repeat') {
-          at = 'step_complete';
-          if (c.envCounter === 0) {
-            if (ch === 3) c.modify |= MO_VOL;
-            this.modVol(c);
-            const env = c.sf & SF_ENV;
-            if (env === ENV_RELEASE) {
-              c.envVol = u8(c.envVol - 1);
-              if (s8(c.envVol) <= 0) at = 'echo_start';
-              else c.envCounter = c.release;
-            } else if (env === ENV_SUSTAIN) at = 'sustain';
-            else if (env === ENV_DECAY) {
-              c.envVol = u8(c.envVol - 1);
-              if (s8(c.envVol) <= s8(c.sustainGoal)) at = 'sustain_start';
-              else c.envCounter = c.decay;
-            } else {
-              c.envVol = u8(c.envVol + 1);
-              if (c.envVol >= c.envGoal) at = 'decay_start';
-              else c.envCounter = c.attack;
-            }
-          }
-        } else if (at === 'echo_start') {
-          c.envVol = (c.envGoal * c.echoVol + 0xff) >> 8;
-          if (c.envVol) {
-            c.sf |= SF_IEC;
-            c.modify |= MO_VOL;
-            if (ch !== 3) envStep = ENV_INC;
-            at = 'env_complete';
-          } else at = 'osc_off';
-        } else if (at === 'sustain') {
-          c.envVol = c.sustainGoal;
-          c.envCounter = 7;
-          at = 'step_complete';
-        } else if (at === 'sustain_start') {
-          if (c.sustain === 0) {
-            c.sf &= ~SF_ENV;
-            at = 'echo_start';
-          } else {
-            c.sf--;
-            c.modify |= MO_VOL;
-            if (ch !== 3) envStep = ENV_INC;
-            at = 'sustain';
-          }
-        } else if (at === 'decay_start') {
-          c.sf--;
-          c.envCounter = c.decay;
-          if (u8(c.envCounter)) {
-            c.modify |= MO_VOL;
-            c.envVol = c.envGoal;
-            if (ch !== 3) envStep = c.decay;
-            at = 'step_complete';
-          } else at = 'sustain_start';
-        } else if (at === 'step_complete') {
-          c.envCounter = u8(c.envCounter - 1);
-          if (prevC15 === 0) {
-            prevC15--;
-            at = 'step_repeat';
-          } else at = 'env_complete';
-        } else if (at === 'osc_off') {
-          this.oscOff(ch);
-          c.sf = 0;
-          c.modify = 0;
-          break;
-        } else {
-          this.writeRegisters(ch, c, envStep);
-          c.modify = 0;
-          break;
+        const channel = v.psg ? (v as any).channel : 0;
+        if (t.levelDirty) {
+          this.voiceLevels(v, t);
+          if (v.psg) v.levelMark = true;
+        }
+        if (t.pitchDirty) {
+          v.rate = this.retune(v, t, channel);
+          if (v.psg) v.pitchMark = true;
         }
       }
+      t.levelDirty = t.pitchDirty = false;
     }
-  }
 
-  private oscOff(ch: number): void {
-    if (ch === 3) this.apu.write(3, 0, 0);
-    else {
-      this.apu.write(ch, 2, 8);
-      this.apu.write(ch, 4, 0x80);
+    private detach(t: SongTrack, v: Voice): void {
+      const i = t.held.indexOf(v);
+      if (i >= 0) t.held.splice(i, 1);
     }
-  }
 
-  private writeRegisters(ch: number, c: CgbChan, envStep: number): void {
-    const hw = this.apu.ch[ch - 1];
-    if (c.modify & MO_PIT) {
-      // 65,536 Hz PWM (SOUNDBIAS_H 0x40, SoundInit): fixed-frequency voices round to even register values
-      if (ch < 4 && c.type & TYPE_FIX) c.frequency = (c.frequency + 1) & 0x7fe;
-      if (ch !== 4) this.apu.write(ch, 3, c.frequency);
-      else this.apu.write(4, 3, (hw.nr3 & 0x08) | (c.frequency & 0xff));
-      c.n4 = (c.n4 & 0xc0) + ((c.frequency >> 8) & 0xff);
-      this.apu.write(ch, 4, c.n4);
+    private tone(index: number): ToneRecord | null {
+      return asRecord(this.song.tones?.[index]);
     }
-    if (c.modify & MO_VOL) {
-      if (ch === 3) {
-        this.apu.write(3, 2, this.tables.cgb3Vol[c.envVol] ?? 0);
-        if (c.n4 & 0x80) {
-          this.apu.write(3, 0, 0x80);
-          this.apu.write(3, 4, c.n4);
-          c.n4 &= 0x7f;
+
+    private note(t: SongTrack, c: number): void {
+      const b = this.bytes;
+      t.gate = this.tables.clock[c - this.engine.ops.noteFirst];
+      if (b[t.pos] < 0x80) {
+        t.key = b[t.pos++];
+        if (b[t.pos] < 0x80) {
+          t.velocity = b[t.pos++];
+          if (b[t.pos] < 0x80) t.gate = (t.gate + b[t.pos++]) & 0xff;
         }
+      }
+      this.sound(t);
+    }
+
+    private sound(t: SongTrack): void {
+      let entry = t.voice;
+      let record = t.record;
+      let key = t.key;
+      let panOffset = 0;
+      if (entry[0] & 0xc0) {
+        if (!record || record.g == null) return;
+        const index = entry[0] & 0x40 ? record.g + (this.song.splits?.[record.k!]?.[t.key] ?? 0) : record.g + t.key;
+        const sub = this.tone(index);
+        if (!sub) return;
+        if (!(entry[0] & 0x40)) {
+          key = sub.b[1];
+          if (sub.b[3] & 0x80) panOffset = s8((sub.b[3] - 0xc0) * 2);
+        }
+        record = sub;
+        entry = sub.b;
+        if (entry[0] & 0xc0) return;
+      }
+      const priority = Math.min(255, this.song.p + t.priority);
+      const channel = entry[0] & 7;
+      let sample: unknown = null;
+      let v: Voice | null;
+      if (channel === 0) {
+        sample = record?.s ? this.song.samples?.[record.s] : this.song.w?.[t.instrument];
+        if (!sample) return;
+        v = this.claimSampled(priority, t.index);
       } else {
-        this.apu.write(ch, 2, (envStep & 0xf) + (c.envVol << 4));
-        this.apu.write(ch, 4, c.n4 | 0x80);
+        v = this.psg[channel - 1];
+        const free = !(v.state & ACTIVE) || v.state & KEY_OFF || v.priority < priority || (v.priority === priority && v.owner >= t.index);
+        if (!free) v = null;
       }
-    }
-  }
+      if (!v) return;
 
-  get sounding(): boolean {
-    return this.playing || this.cgb.some((c) => c.sf & SF_ON) || this.ds.some((c) => c.sf & SF_ON) || this.apu.active;
-  }
-}
+      if (v.owner >= 0 && this.tracks[v.owner]) this.detach(this.tracks[v.owner], v);
+      t.held.push(v);
+      t.lfoHold = t.lfoDelay;
+      if (t.lfoDelay) this.calm(t);
+      if (t.levelDirty) this.trackLevels(t);
+      if (t.pitchDirty) this.trackPitch(t);
+      t.levelDirty = t.pitchDirty = false;
 
-// mono FIFO mixing at half volume: 2 * (A + B) of the 10-bit output, so the two 8-bit buffers at full scale reach
-// 1.0. The CGB step size (0.5 / 15 per volume step) is an estimate; tune by ear
-const DS_LEVEL = 1 / 256;
-
-type RenderOptions = { maxFrames?: number; stride?: number; loops?: number };
-type RenderResult = { samples: Float32Array; frames: number; endFrame: number; fineFrame: number; notes: [number, number, number][]; loops: number[]; frameStarts: number[] };
-
-// steps a song frame by frame into `rate` Hz mono samples; `loops` stops it after that many loop GOTOs on the first
-// track, and frameStarts[f] is the output index where frame f begins (the loop points come from these)
-class Renderer {
-  readonly player: Player;
-  private readonly chunks: Float32Array[] = [];
-  private chunk: Float32Array;
-  private readonly at = { index: 0, acc: 0, sum: 0, count: 0 };
-  private readonly frameStarts: number[] = [];
-  private readonly dsUnits: number;
-  private readonly maxFrames: number;
-  private readonly stride: number;
-  private readonly loopsWanted: number;
-  done = false;
-
-  constructor(song: SongData, tables: Tables, readonly rate: number, readonly scale: number, opts: RenderOptions = {}) {
-    this.player = new Player(song, tables);
-    this.maxFrames = opts.maxFrames ?? MAX_FRAMES;
-    this.stride = opts.stride ?? 1;
-    this.loopsWanted = opts.loops ?? 0;
-    // the 8-bit DirectSound buffers sum to -256..254; DS_LEVEL maps that onto the output, in CGB volume steps
-    this.dsUnits = DS_LEVEL / scale;
-    this.chunk = new Float32Array(Math.ceil((FRAME_TICKS * rate) / (1 << 20)) * 64 + 8);
-  }
-
-  // runs up to `frames` frames; true once the song is over
-  step(frames: number): boolean {
-    const p = this.player;
-    for (let n = 0; n < frames && !this.done; n++) {
-      if (!p.sounding || p.frames >= this.maxFrames || (this.loopsWanted && p.loops.length >= this.loopsWanted)) {
-        this.done = true;
-        break;
+      const slot = v as any;
+      slot.state = NEW;
+      slot.owner = t.index;
+      slot.gate = t.gate;
+      slot.noteKey = t.key;
+      slot.velocity = t.velocity;
+      slot.priority = priority;
+      slot.key = key;
+      slot.panOffset = panOffset;
+      slot.type = entry[0];
+      slot.attack = entry[8];
+      slot.decay = entry[9];
+      slot.sustain = entry[10];
+      slot.release = entry[11];
+      slot.echoVolume = t.echoVolume;
+      slot.echoLength = t.echoLength;
+      this.voiceLevels(v, t);
+      if (channel === 0) {
+        slot.sample = sample;
+        slot.start = t.startOffset;
+      } else {
+        slot.length = entry[2];
+        const sweep = entry[3];
+        slot.sweep = !(sweep & 0x80) && sweep & 0x70 ? sweep : 8;
+        slot.reference = word(entry, 4);
+        slot.image = channel === 3 ? (this.song.waves?.[record?.w ?? ''] ?? null) : null;
       }
-      this.frameStarts.push(this.base() + this.at.index);
-      p.frame();
-      p.apu.run(FRAME_TICKS, this.chunk, this.at, this.rate, this.scale, p.dsOut, this.dsUnits, this.stride);
-      if (this.at.index > this.chunk.length - Math.ceil((FRAME_TICKS * this.rate) / (1 << 20)) - 8) this.flush();
+      v.rate = this.retune(v, t, channel);
+      this.notes.push([this.frames, channel, v.rate]);
     }
-    return this.done;
-  }
 
-  private base(): number {
-    return this.chunks.reduce((sum, c) => sum + c.length, 0);
-  }
-
-  private flush(): void {
-    this.chunks.push(this.chunk.slice(0, this.at.index));
-    this.at.index = 0;
-  }
-
-  result(trim: boolean): RenderResult {
-    this.flush();
-    const total = this.base();
-    const samples = new Float32Array(total);
-    let at = 0;
-    for (const c of this.chunks) {
-      samples.set(c, at);
-      at += c.length;
+    // the sampled-voice claim of 9.1: a silent voice, else the top-ranked released one, else the top-ranked voice
+    // if it ranks at or above the note
+    private claimSampled(priority: number, track: number): Voice | null {
+      const voices = this.ds;
+      const silent = voices.find((v) => !(v.state & ACTIVE));
+      if (silent) return silent;
+      const above = (x: Voice, xi: number, y: Voice, yi: number) =>
+        x.priority !== y.priority ? x.priority < y.priority : x.owner !== y.owner ? x.owner > y.owner : xi > yi;
+      const best = (pool: number[]) => pool.reduce((top, i) => (top < 0 || above(voices[i], i, voices[top], top) ? i : top), -1);
+      const all = voices.map((_, i) => i);
+      const released = best(all.filter((i) => voices[i].state & KEY_OFF));
+      if (released >= 0) return voices[released];
+      const top = voices[best(all)];
+      return top.priority < priority || (top.priority === priority && top.owner >= track) ? top : null;
     }
-    this.chunks.length = 0;
-    let end = total;
-    // a cry's player keeps running (the 140-frame wait) after its sample ends: drop the silent tail
-    if (trim) while (end > 0 && Math.abs(samples[end - 1]) < 1e-6) end--;
-    const p = this.player;
-    return { samples: end === total ? samples : samples.slice(0, end), frames: p.frames, endFrame: p.endFrame, fineFrame: p.fineFrame, notes: p.notes, loops: p.loops, frameStarts: this.frameStarts };
   }
-}
 
-// one-pole high-pass, in place: the music bus's stand-in for the GBA's output coupling capacitor and small speaker,
-// which take the edge off the low end that a line-level render keeps
-function highPass(x: Float32Array, rate: number, cornerHz: number): void {
-  const a = Math.exp((-2 * Math.PI * cornerHz) / rate);
-  let prevIn = 0;
-  let prevOut = 0;
-  for (let i = 0; i < x.length; i++) {
-    const v = x[i];
-    prevOut = a * (prevOut + v - prevIn);
-    prevIn = v;
-    x[i] = prevOut;
-  }
-}
-
-// cuts a render that ran to its second loop GOTO down to the intro plus one loop body. The audio before each seam
-// fades over `fade` samples into the end of the first pass, which leads straight into the loop start, so neither
-// the intro join nor the loop wrap jumps between free-running oscillator phases
-function loopCut(r: RenderResult, fade: number): { samples: Float32Array; loopStart: number; loopEnd: number } | null {
-  if (r.loops.length < 2) return null;
-  const [g1, g2] = r.loops;
-  const b0 = g1 - (g2 - g1);
-  if (b0 < 0) return null;
-  const src = r.samples;
-  const s0 = r.frameStarts[b0];
-  const s1 = r.frameStarts[g1];
-  const s2 = r.frameStarts[g2];
-  const out = new Float32Array(s0 + (s2 - s1));
-  out.set(src.subarray(0, s0), 0);
-  out.set(src.subarray(s1, s2), s0);
-  const blend = (end: number, from: number) => {
-    const n = Math.min(fade, end, s1);
-    for (let i = 0; i < n; i++) {
-      const w = (i + 1) / n;
-      out[end - n + i] = out[end - n + i] * (1 - w) + src[s1 - n + i] * w;
-    }
+  type RenderResult = {
+    samples: Float32Array;
+    frames: number;
+    endFrame: number;
+    fineFrame: number;
+    notes: number[][];
+    loops: number[];
+    frameStarts: number[];
   };
-  blend(s0, s0);
-  blend(out.length, s2);
-  return { samples: out, loopStart: s0, loopEnd: out.length };
-}
 
-// renders a song at `rate` Hz, mono, until the sequence has ended and every channel is off
-function renderSong(song: SongData, tables: Tables, rate: number, scale: number): RenderResult {
-  const r = new Renderer(song, tables, rate, scale);
-  while (!r.step(1000));
-  return r.result(true);
-}
+  class Renderer {
+    readonly player: Player;
+    done = false;
+    private readonly frameStarts: number[] = [];
+    private out = new Float32Array(1 << 16);
+    private written = 0;
+    private readonly cursor = { index: 0, acc: 0, sum: 0, count: 0 };
+    private readonly scratch: Float32Array;
+    private readonly maxFrames: number;
+    private readonly stride: number;
+    private readonly loopsWanted: number;
+    private readonly dsUnit: number;
 
-// one PlayCryInternal call in a CRY_MODE_* (lower case), as samples plus the frame its song ran FINE
-function cryPart(wave: any, cries: any, tables: Tables, mode: string, rate: number, scale: number): { samples: Float32Array; fineFrame: number } {
-  const params = { ...cries.params, ...(cries.modes?.[mode] ?? {}) };
-  const r = renderSong(seqLib.ds.crySong(params, wave), tables, rate, scale);
-  return { samples: r.samples, fineFrame: r.fineFrame };
-}
+    constructor(
+      song: any,
+      tables: any,
+      private readonly rate: number,
+      private readonly scale: number,
+      opts: { maxFrames?: number; stride?: number; loops?: number } = {},
+    ) {
+      this.player = new Player(song, tables);
+      this.maxFrames = opts.maxFrames || 480;
+      this.stride = opts.stride || 1;
+      this.loopsWanted = opts.loops || 0;
+      this.dsUnit = 1 / 256 / scale;
+      this.scratch = new Float32Array(Math.ceil((FRAME_TICKS * rate) / TICK_HZ) + 8);
+    }
 
-// a cry as the game's callers play it; the battle animation sound tasks (battle_anim_sound_tasks.c) frame by frame:
-// growl, roar: SoundTask_PlayDoubleCry plays *_1, waits 2 frames, then starts *_2 the frame after the first cry's
-//   song has ended (IsCryPlaying is false once FINE detaches its channel); the first cry's release overlaps
-// echo: SoundTask_PlayCryWithEcho starts ECHO_START on frame 2, checks from frame 5, stops it the frame its song
-//   has ended (StopCryAndClearCrySongs) and starts ECHO_END the next frame
-function cryClip(wave: any, cries: any, tables: Tables, mode: string, rate: number, scale: number): Float32Array {
-  if (mode !== 'growl' && mode !== 'roar' && mode !== 'echo') return cryPart(wave, cries, tables, mode, rate, scale).samples;
-  const first = cryPart(wave, cries, tables, mode === 'echo' ? 'echo_start' : `${mode}_1`, rate, scale);
-  const second = cryPart(wave, cries, tables, mode === 'echo' ? 'echo_end' : `${mode}_2`, rate, scale);
-  let start1 = 0;
-  let cut1 = Infinity;
-  let start2: number;
-  if (mode === 'echo') {
-    start1 = 2;
-    cut1 = Math.max(5, start1 + first.fineFrame + 1);
-    start2 = cut1 + 1;
-  } else start2 = Math.max(3, first.fineFrame + 1);
-  const at = (frame: number) => Math.round((frame * FRAME_TICKS * rate) / (1 << 20));
-  const len1 = Math.min(first.samples.length, Number.isFinite(cut1) ? at(cut1) - at(start1) : Infinity);
-  const out = new Float32Array(Math.max(at(start1) + len1, at(start2) + second.samples.length));
-  out.set(first.samples.subarray(0, len1), at(start1));
-  const o2 = at(start2);
-  for (let i = 0; i < second.samples.length; i++) out[o2 + i] += second.samples[i];
-  return out;
-}
+    step(frames: number): boolean {
+      const p = this.player;
+      for (let n = 0; n < frames && !this.done; n++) {
+        if (!p.sounding || p.frames >= this.maxFrames || (this.loopsWanted && p.loops.length >= this.loopsWanted)) {
+          this.done = true;
+          break;
+        }
+        this.frameStarts.push(this.written);
+        p.frame();
+        this.cursor.index = 0;
+        p.apu.run(FRAME_TICKS, this.scratch, this.cursor, this.rate, this.scale, p.dsOut, this.dsUnit, this.stride);
+        this.keep(this.cursor.index);
+      }
+      return this.done;
+    }
 
-seqLib.seq = { Player, Renderer, renderSong, loopCut, highPass, cryClip };
+    private keep(count: number): void {
+      if (this.written + count > this.out.length) {
+        const bigger = new Float32Array(Math.max(this.out.length * 2, this.written + count));
+        bigger.set(this.out.subarray(0, this.written));
+        this.out = bigger;
+      }
+      this.out.set(this.scratch.subarray(0, count), this.written);
+      this.written += count;
+    }
+
+    result(trim: boolean): RenderResult {
+      let n = this.written;
+      if (trim) while (n > 0 && Math.abs(this.out[n - 1]) < 1e-6) n--;
+      const p = this.player;
+      return {
+        samples: this.out.slice(0, n),
+        frames: p.frames,
+        endFrame: p.endFrame,
+        fineFrame: p.fineFrame,
+        notes: p.notes,
+        loops: p.loops,
+        frameStarts: this.frameStarts,
+      };
+    }
+  }
+
+  function renderSong(song: any, tables: any, rate: number, scale: number): RenderResult {
+    const r = new Renderer(song, tables, rate, scale);
+    while (!r.step(1000));
+    return r.result(true);
+  }
+
+  // intro plus one loop body, with both seams faded into the audio just before the first loop frame (A.8)
+  function loopCut(r: RenderResult, fade: number): { samples: Float32Array; loopStart: number; loopEnd: number } | null {
+    if (r.loops.length < 2) return null;
+    const [first, second] = r.loops;
+    const intro = first - (second - first);
+    if (intro < 0) return null;
+    const s0 = r.frameStarts[intro];
+    const s1 = r.frameStarts[first];
+    const s2 = r.frameStarts[second];
+    const src = r.samples;
+    const out = new Float32Array(s0 + (s2 - s1));
+    out.set(src.subarray(0, s0));
+    out.set(src.subarray(s1, s2), s0);
+    const blend = (end: number, span: number) => {
+      for (let i = 0; i < span; i++) {
+        const w = (i + 1) / span;
+        out[end - span + i] = out[end - span + i] * (1 - w) + src[s1 - span + i] * w;
+      }
+    };
+    blend(s0, Math.min(fade, s0, s1));
+    blend(out.length, Math.min(fade, out.length, s1));
+    return { samples: out, loopStart: s0, loopEnd: out.length };
+  }
+
+  function highPass(samples: Float32Array, rate: number, cornerHz: number): void {
+    const a = Math.exp((-2 * Math.PI * cornerHz) / rate);
+    let lastIn = 0;
+    let lastOut = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const x = samples[i];
+      lastOut = a * (lastOut + x - lastIn);
+      lastIn = x;
+      samples[i] = lastOut;
+    }
+  }
+
+  const TWO_PART: Record<string, [string, string]> = { echo: ['echo_start', 'echo_end'], growl: ['growl_1', 'growl_2'], roar: ['roar_1', 'roar_2'] };
+
+  function cryClip(wave: any, cries: any, tables: any, mode: string, rate: number, scale: number): Float32Array {
+    const part = (name: string) => renderSong(crySong(cries.params, cries.songs[name] ?? cries.songs.normal, wave, tables), tables, rate, scale);
+    const pair = TWO_PART[mode];
+    if (!pair) return part(mode).samples;
+    const one = part(pair[0]);
+    const two = part(pair[1]).samples;
+    const tasks = tables.engine.cryTasks;
+    const at = (frame: number) => Math.round((frame * FRAME_TICKS * rate) / TICK_HZ);
+    let start1 = 0;
+    let start2: number;
+    let kept = one.samples.length;
+    if (mode === 'echo') {
+      start1 = tasks.echoStart;
+      const cut = Math.max(tasks.echoCheckFrom, start1 + one.fineFrame + 1);
+      start2 = cut + 1;
+      kept = Math.min(kept, at(cut) - at(start1));
+    } else {
+      start2 = Math.max(tasks.doubleWait, one.fineFrame + 1);
+    }
+    const out = new Float32Array(Math.max(at(start1) + kept, at(start2) + two.length));
+    out.set(one.samples.subarray(0, kept), at(start1));
+    const base = at(start2);
+    for (let i = 0; i < two.length; i++) out[base + i] = out[base + i] + two[i];
+    return out;
+  }
+
+  peaLib.seq = { Player, Renderer, renderSong, loopCut, highPass, cryClip };
+})();

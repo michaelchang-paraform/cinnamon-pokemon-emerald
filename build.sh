@@ -75,7 +75,7 @@ sprites/pokemon/versions/generation-iii/firered-leafgreen/back/*.png
 sprites/pokemon/versions/generation-iii/ruby-sapphire/back/*.png
 sprites/pokemon/versions/generation-iii/firered-leafgreen/1000[12].png'
 
-step "fetch the battle animation sources (pret/pokeemerald)"
+step "fetch the battle animation, ball and send-out sources (pret/pokeemerald)"
 sh source/battle/fetch-anims.sh
 
 step "fetch the partner graphics (pret/pokeemerald)"
