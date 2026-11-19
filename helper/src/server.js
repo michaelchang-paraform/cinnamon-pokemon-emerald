@@ -16,6 +16,10 @@ const DEFAULTS = {
   cpuTimerSeconds: 0,
   challengeCooldownSeconds: 15,
   serviceType: 'pkmn-emerald',
+  claudeBin: 'claude',
+  claudeModel: 'haiku',
+  claudeTimeoutSeconds: 20,
+  claudeBattleBudgetUsd: 0.5,
   allowedOrigins: ['https://claude.ai'],
   peers: [],
 };
@@ -53,16 +57,32 @@ function parseArgs(argv, env) {
     else if (arg === '--peer') config.peers.push(...parsePeers(next(), config.lanPort));
     else if (arg === '--lan-timer') config.lanTimerSeconds = num(next(), arg);
     else if (arg === '--cpu-timer') config.cpuTimerSeconds = num(next(), arg);
+    else if (arg === '--claude-bin') config.claudeBin = next();
+    else if (arg === '--claude-model') config.claudeModel = oneOf(next(), ['haiku', 'sonnet', 'opus', 'fable'], arg);
+    else if (arg === '--claude-timeout') config.claudeTimeoutSeconds = range(num(next(), arg), 5, 60, arg);
+    else if (arg === '--claude-battle-budget') config.claudeBattleBudgetUsd = budget(next(), arg);
     else if (arg === '--service-type') config.serviceType = serviceType(next());
     else if (arg === '--challenge-cooldown') config.challengeCooldownSeconds = num(next(), arg);
     else if (arg === '--allow-origin') config.allowedOrigins.push(next());
     else if (arg === '--help' || arg === '-h') {
       console.log('usage: start.sh [--port 41851] [--lan-port 41852] [--lan-host 0.0.0.0] [--name NAME] [--format gen3randombattle]\n'
-        + '                [--no-lan] [--discovery auto|dnssd|mdns|off] [--no-mdns] [--peer host:port] [--lan-timer 150] [--cpu-timer 0] [--challenge-cooldown 15] [--service-type pkmn-emerald] [--allow-origin URL]');
+        + '                [--no-lan] [--discovery auto|dnssd|mdns|off] [--no-mdns] [--peer host:port] [--lan-timer 150] [--cpu-timer 0] [--challenge-cooldown 15] [--service-type pkmn-emerald]\n'
+        + '                [--claude-bin claude] [--claude-model haiku|sonnet|opus|fable] [--claude-timeout 20] [--claude-battle-budget 0.5] [--allow-origin URL]');
       process.exit(0);
     } else throw new Error(`unknown argument ${arg}`);
   }
   return config;
+}
+
+function range(value, min, max, name) {
+  if (value < min || value > max) throw new Error(`${name} must be ${min}-${max}`);
+  return value;
+}
+
+function budget(value, name) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 20) throw new Error(`${name} must be a dollar amount 0-20`);
+  return n;
 }
 
 function serviceType(value) {

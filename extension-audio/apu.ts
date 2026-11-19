@@ -1,7 +1,6 @@
 // The GBA's four Game Boy sound channels (square 1 with sweep, square 2, wave, noise) as register-level state,
 // clocked at 2^20 Hz: one tick is 4 CPU cycles of the 4,194,304 Hz Game Boy clock. The m4a driver in seq.ts writes
 // these registers once per frame, exactly as CgbSound writes NRxx; between frames the hardware runs on its own.
-// The wave channel stays silent: build-audio.mjs refuses wave voices until a slice needs them.
 const TICK_HZ = 1 << 20;
 // 280,896 CPU cycles at 16.78 MHz per frame, so 59.7275 frames a second
 const FRAME_TICKS = 17556;
@@ -31,6 +30,8 @@ class Chan {
   sweepTimer = 0;
   sweepOn = false;
   lfsr = 0x7fff;
+  // wave RAM as 32 4-bit samples
+  ram = new Uint8Array(32);
 
   constructor(readonly n: number) {}
 
@@ -61,6 +62,7 @@ class Chan {
 
   private period(): number {
     if (this.n === 4) return NOISE_DIV[this.nr3 & 7] << (this.nr3 >> 4);
+    // the wave channel steps one 4-bit sample every 2 * (2048 - f) cycles of the 4 MHz clock
     return this.n === 3 ? (2048 - this.freq) / 2 : 2048 - this.freq;
   }
 
@@ -116,9 +118,10 @@ class Chan {
   }
 
   // one 2^20 Hz tick; returns the channel's level centred on zero, in units of one volume step
-  step(): number {
-    if (!this.on || this.n === 3) return 0;
-    if (--this.timer <= 0) {
+  step(stride: number): number {
+    if (!this.on) return 0;
+    this.timer -= stride;
+    while (this.timer <= 0) {
       this.timer += this.period();
       if (this.n === 4) {
         const bit = (this.lfsr ^ (this.lfsr >> 1)) & 1;
@@ -127,6 +130,11 @@ class Chan {
       } else this.pos = (this.pos + 1) & (this.n === 3 ? 31 : 7);
     }
     if (this.n === 4) return this.lfsr & 1 ? -this.vol : this.vol;
+    if (this.n === 3) {
+      // NR32: bits 5-6 pick 0, 100, 50 or 25 percent, bit 7 forces 75 percent (GBA)
+      const level = (v: number) => (this.nr2 & 0x80 ? (v * 3) >> 2 : [0, v, v >> 1, v >> 2][(this.nr2 >> 5) & 3]);
+      return level(this.ram[this.pos]) * 2 - level(15);
+    }
     return (DUTY[this.nr1 >> 6] >> (7 - this.pos)) & 1 ? this.vol : -this.vol;
   }
 }
@@ -144,24 +152,35 @@ class Apu {
     this.ch[chan - 1].on = false;
   }
 
+  setWave(bytes: number[] | null): void {
+    const ram = this.ch[2].ram;
+    for (let i = 0; i < 16; i++) {
+      const b = bytes?.[i] ?? 0;
+      ram[i * 2] = b >> 4;
+      ram[i * 2 + 1] = b & 15;
+    }
+  }
+
   // runs `ticks` hardware ticks and box-averages them into `out` at `rate`; `acc` carries the resampling phase
   // `ds` holds the frame's DirectSound samples, each held for 1/224 of the frame as the FIFO plays them
-  run(ticks: number, out: Float32Array, at: { index: number; acc: number; sum: number; count: number }, rate: number, scale: number, ds?: Float32Array, dsUnits = 0): void {
+  // `stride` ticks per step (music uses 4, a 262,144 Hz grid)
+  run(ticks: number, out: Float32Array, at: { index: number; acc: number; sum: number; count: number }, rate: number, scale: number, ds?: Float32Array, dsUnits = 0, stride = 1): void {
     const [c1, c2, c3, c4] = this.ch;
     const per = ds ? ds.length : 0;
-    for (let t = 0; t < ticks; t++) {
+    for (let t = 0; t < ticks; t += stride) {
       if (per) at.sum += ds![Math.floor((t * per) / ticks)] * dsUnits;
-      if (--this.seqTimer === 0) {
-        this.seqTimer = SEQ_TICKS;
+      this.seqTimer -= stride;
+      if (this.seqTimer <= 0) {
+        this.seqTimer += SEQ_TICKS;
         const s = this.seqStep;
         if ((s & 1) === 0) for (const c of this.ch) c.clockLength();
         if (s === 2 || s === 6) c1.clockSweep();
         if (s === 7) for (const c of this.ch) c.clockEnvelope();
         this.seqStep = (s + 1) & 7;
       }
-      at.sum += c1.step() + c2.step() + c3.step() + c4.step();
+      at.sum += c1.step(stride) + c2.step(stride) + c3.step(stride) + c4.step(stride);
       at.count++;
-      at.acc += rate;
+      at.acc += rate * stride;
       if (at.acc >= TICK_HZ) {
         at.acc -= TICK_HZ;
         if (at.index < out.length) out[at.index] = (at.sum / at.count) * scale;

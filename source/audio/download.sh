@@ -13,6 +13,7 @@ if [ ! -d "$DIR/.git" ]; then
 fi
 cat > "$DIR/.git/info/sparse-checkout" <<'PATTERNS'
 /sound/songs/midi/se_*.mid
+/sound/songs/midi/mus_*.mid
 /sound/songs/midi/midi.cfg
 /sound/voicegroups/*
 /sound/direct_sound_samples/*.wav
@@ -30,6 +31,7 @@ cat > "$DIR/.git/info/sparse-checkout" <<'PATTERNS'
 /include/constants/songs.h
 /include/constants/sound.h
 /include/constants/species.h
+/include/constants/pokedex.h
 /src/data/text/species_names.h
 /src/pokemon_summary_screen.c
 /src/naming_screen.c
@@ -43,6 +45,13 @@ cat > "$DIR/.git/info/sparse-checkout" <<'PATTERNS'
 /tools/mid2agb/*
 /tools/wav2agb/*
 /audio_rules.mk
+/data/battle_anim_scripts.s
+/include/constants/battle_anim.h
+/sound/voicegroups/drumsets/*
+/sound/voicegroups/keysplits/*
+/src/battle_script_commands.c
+/src/palette.c
+/src/pokemon.c
 PATTERNS
 git -C "$DIR" fetch --filter=blob:none --depth 1 origin "$COMMIT"
 git -C "$DIR" checkout -q "$COMMIT"

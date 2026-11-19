@@ -66,7 +66,7 @@ page, and any of them can send choices.
 | `challenge` | `peerId`, `format` (optional, default `gen3randombattle`) | Challenges a trainer from `lobby.peers`. Helper answers `challenge_sent`. |
 | `cancel_challenge` | `challengeId` | Withdraws your outgoing challenge. |
 | `respond_challenge` | `challengeId`, `accept: true or false` | Answers an incoming challenge. |
-| `start_cpu` | `format` (optional), `difficulty`: `"smart"` (default) or `"random"` | Starts a battle against the CPU. |
+| `start_cpu` | `format` (optional), `difficulty`: `"smart"` (default) or `"random"`, `opponent`: `"cpu"` (default) or `"claude"`, `model`: `"haiku"` (default), `"sonnet"`, `"opus"` or `"fable"` | Starts a battle against the scripted CPU or against Claude (see Claude battle). `model` applies only to Claude. |
 | `choose` | `battleId`, `choice`, `rqid` (send the value from the last `request`) | Sends the player's choice for the open request. |
 | `forfeit` | `battleId` | Forfeits the current battle. |
 
@@ -133,8 +133,13 @@ The order is `TRAINERS` followed by `MORE_TRAINERS` in `source/partners/build-as
 {"type":"welcome","protocol":1,"version":"0.1.0",
  "trainer":{"id":"64a9604e9162c0aa","name":"May","cls":1,"palette":null},
  "status":"idle","looking":false,"defaultFormat":"gen3randombattle",
- "lan":{"enabled":true,"port":41852,"discovery":"dnssd"}}
+ "lan":{"enabled":true,"port":41852,"discovery":"dnssd"},
+ "claude":{"available":true,"version":"2.1.328","reason":null,"models":["haiku","sonnet","opus","fable"],"defaultModel":"haiku"}}
 ```
+
+`launchAgent` is true when the helper runs under the LaunchAgent from `helper/launchd/install.sh`. Store it, so the offline screen can say that the helper restarts on its own.
+
+`claude.available` is false when `claude --version` failed at helper start. `reason` is then `not_found` or `version_failed`. Grey out the Claude option in that case.
 
 `lan.discovery` is `dnssd` (macOS Bonjour daemon), `mdns` (built-in multicast), or `off`.
 
@@ -256,6 +261,24 @@ Lines the battle screen needs to handle (full reference: Showdown `sim/SIM-PROTO
 | `\|win\|NAME` and `\|tie` | End of battle (also sent as `battle_end`). |
 | `\|`, `\|t:\|...`, `\|upkeep`, `\|gametype\|`, `\|gen\|`, `\|tier\|`, `\|rule\|` | No visual. |
 
+Balls: a `battle` message whose lines contain `|switch|`, `|drag|` or `|replace|` also has `balls`, for both sides:
+
+```json
+{"type":"battle","battleId":"a86d2bb80bc7","lines":["|switch|p2a: Groudon|Groudon, L69|100/100"],"balls":{"p2: Groudon":"ultra"}}
+```
+
+- The key is the Pokemon ident without the slot letter (`p2a: Groudon` becomes `p2: Groudon`), the same form as
+  `request.side.pokemon[i].ident`.
+- Each Pokemon in `request.side.pokemon` also has `ball`.
+- The value is one of `poke`, `great`, `ultra`, `master`, `safari`, `net`, `dive`, `nest`, `repeat`, `timer`, `luxury`, `premier`.
+- The helper that runs the simulator picks each ball once, when the battle starts, and keeps it for the whole battle.
+  In a LAN battle that is the challenger's helper. It picks for both teams, and the guest gets the same values through
+  the relay, so both screens show the same ball. A CPU or Claude opponent gets its balls from the local helper.
+- Weights out of 100: poke 30, great 22, ultra 16, net 4, dive 4, nest 4, repeat 4, timer 4, luxury 4, premier 4,
+  safari 3, master 1.
+- The replayed log after a reconnect carries `balls` for every switch-in in it.
+- An older helper sends no `balls`. Use `poke` then.
+
 `request` (your choice is open):
 
 ```json
@@ -331,6 +354,60 @@ A clock stops when that side chooses. The page can count down locally from `seco
 | `error`, `shutdown`, `host_busy`, `start_timeout` | Something broke. Show "Battle ended" and offer to go back to the lobby. |
 
 After `battle_end` the helper sends `status` (back to `idle` or `looking`).
+
+### Claude battle
+
+`start_cpu` with `opponent: "claude"` starts a CPU battle where an isolated `claude -p` run picks each CPU action.
+The flow is the CPU battle flow plus these messages:
+
+`battle_start.opponent` for a Claude battle:
+
+```json
+{"id":null,"name":"CLAUDE","cpu":true,"kind":"claude","model":"haiku","difficulty":"smart","cls":12,"palette":null}
+```
+
+For the scripted CPU, `kind` is `"cpu"` and `model` is `null`.
+
+`opponent_thinking` (Claude started or stopped choosing):
+
+```json
+{"type":"opponent_thinking","battleId":"9a9f37b7633d","thinking":true}
+```
+
+Claude starts when its own request arrives, which is the same moment your menu opens. While `thinking` is true and
+your choice is already sent, show `CLAUDE is thinking...`. Hide it on `thinking: false`. One decision takes at most
+20 s (helper setting `--claude-timeout`, 5 to 60 s). Measured on Haiku: median 4.6 s, slowest 11 s.
+
+`opponent_fallback` (sent once, when the scripted CPU takes over for the rest of the battle):
+
+```json
+{"type":"opponent_fallback","battleId":"9a9f37b7633d","reason":"failures"}
+```
+
+| reason | Meaning |
+| --- | --- |
+| `failures` | 3 decisions in a row failed (bad reply after one retry, timeout, error exit). |
+| `budget` | The battle reached the helper's cost cap (`--claude-battle-budget`, default 0.50 USD). |
+
+A single failed decision uses the scripted move for that turn and sends nothing. Suggested text:
+`CLAUDE went quiet. CPU takes over.`
+
+`battle_end` for a Claude battle adds `opponentStats`:
+
+```json
+{"type":"battle_end","battleId":"9a9f37b7633d","result":"loss","reason":"normal","turns":19,
+ "opponentStats":{"model":"haiku","decisions":22,"claudeDecisions":22,"fallbacks":0,"handedOver":false,
+  "costUsd":0.019433,"inputTokens":49032,"cacheReadTokens":10805,"outputTokens":19045,"medianMs":4595,"maxMs":10986,"latenciesMs":[5660,2719]}}
+```
+
+`costUsd` is the Claude Code client estimate, not the bill. The result screen can show `CLAUDE (HAIKU)` from `model`.
+
+What Claude sees: only the p2 view (its own team with exact HP, the foe's visible species, HP percent, status,
+boosts and revealed moves, items and abilities, the weather and the last turn's events) and the legal action list.
+It never sees your team, your request or your queued choice. The prompt has no type-effectiveness hints.
+
+Errors for `start_cpu`: `bad_value` for an unknown `opponent` or `model`, `claude_unavailable` when
+`welcome.claude.available` is false.
 
 ### Errors
 

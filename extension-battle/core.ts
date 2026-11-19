@@ -298,6 +298,8 @@ class Sfx {
   unlock(): void {
     if (rt.disposed || !this.enabled) return;
     try {
+      // the synth context only starts inside a user gesture; battle events before one stay silent
+      if (!this.ctx && !(navigator as any).userActivation?.isActive) return;
       if (!this.ctx) {
         this.ctx = new AudioContext();
         this.master = this.ctx.createGain();

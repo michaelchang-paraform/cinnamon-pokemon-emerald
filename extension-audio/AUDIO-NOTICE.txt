@@ -1,5 +1,6 @@
-audio-sfx.css and audio-cries-1.css to audio-cries-5.css hold, after the build, Generation III sound data from the pret/pokeemerald
-decompilation, https://github.com/pret/pokeemerald (commit 9103e52): sound effect sequences converted with its
-mid2agb tool, voicegroup entries, m4a driver tables, and the Pokemon cries compressed with its wav2agb tool. The sound
-contents are copyright Nintendo, Creatures Inc. and GAME FREAK Inc. The build fetches them for personal use only. They are not in the repository. Rebuild
-with source/audio/download.sh and source/audio/build-audio.mjs.
+audio-sfx.css, audio-cries-1.css to audio-cries-5.css and audio-music-1.css hold, after the build, Generation III
+sound data from the pret/pokeemerald decompilation, https://github.com/pret/pokeemerald (commit 9103e52): sound effect
+and music sequences converted with its mid2agb tool, voicegroup entries, key split tables, programmable wave and
+DirectSound samples converted with its wav2agb tool, m4a driver tables, and the Pokemon cries compressed with wav2agb.
+The sound contents are copyright Nintendo, Creatures Inc. and GAME FREAK Inc. The build fetches them for personal use
+only. None of this data is in the repository. Build it with source/audio/download.sh and source/audio/build-audio.mjs.

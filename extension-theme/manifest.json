@@ -2,7 +2,7 @@
   "id": "pokemon-emerald",
   "name": "Pokemon Emerald",
   "description": "Gen 3 pixel fonts, the battle menu cursor and a partner Pokemon in the sidebar, for the Pokemon Emerald theme",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "page": [
     "page.ts"
   ],
@@ -10,6 +10,10 @@
     "fonts.css",
     "fonts-hangul.css",
     "sprites.css",
+    "items-balls.css",
+    "items-items.css",
+    "items-key.css",
+    "items-berries.css",
     "emerald.css"
   ]
 }

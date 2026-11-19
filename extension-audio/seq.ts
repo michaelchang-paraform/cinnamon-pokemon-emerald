@@ -3,11 +3,28 @@
 // in ds.ts. Each song renders alone into a Float32Array, so channel priority against other players does not apply.
 const seqLib = ((window as any).__peaLib ??= {});
 const { Apu, FRAME_TICKS } = seqLib.apu;
-const { midiKeyToFreq, dsFrame, DS_SAMPLES } = seqLib.ds;
+const { midiKeyToFreq, DsMixer, DS_SAMPLES } = seqLib.ds;
 
 type Tables = { clock: number[]; cgbScale: number[]; cgbFreq: number[]; noise: number[]; cgb3Vol: number[]; scale: number[]; freq: number[]; delta: number[] };
-type SongData = { p: number; r: number; t: number[]; b?: string; bytes?: Uint8Array; v: Record<string, number[]>; w?: Record<string, any> };
-type Tone = { type: number; key: number; length: number; panSweep: number; wav: number; attack: number; decay: number; sustain: number; release: number };
+// v maps a VOICE operand to its 12 ToneData bytes (effects, cries) or to an index in `tones` (music, where key split
+// and drumset voices reach further entries); s, w, g and k name a tone's sample, wave RAM image, group and split table
+type ToneRec = { b: number[]; s?: string; w?: string; g?: number; k?: string };
+type SongData = {
+  p: number;
+  r: number;
+  t: number[];
+  b?: string;
+  bytes?: Uint8Array;
+  v: Record<string, number[] | number | ToneRec>;
+  w?: Record<string, any>;
+  tones?: Record<string, ToneRec>;
+  splits?: Record<string, number[]>;
+  samples?: Record<string, any>;
+  waves?: Record<string, number[]>;
+  // m4aMPlayPitchControl: added to every track's pitch, in 1/256 semitones
+  pitX?: number;
+};
+type Tone = { type: number; key: number; length: number; panSweep: number; wav: number; attack: number; decay: number; sustain: number; release: number; rec?: ToneRec };
 
 const SF_START = 0x80;
 const SF_STOP = 0x40;
@@ -64,7 +81,8 @@ class CgbChan {
   echoLen = 0;
   length = 0;
   sweep = 0;
-  wav = 0;
+  wav: any = 0;
+  rhythmPan = 0;
   frequency = 0;
   n4 = 0;
   track: Track | null = null;
@@ -77,6 +95,7 @@ class CgbChan {
 }
 
 class Track {
+  index = 0;
   flags = 0;
   ptr = 0;
   wait = 0;
@@ -115,8 +134,8 @@ class Track {
   chans = new Set<CgbChan>();
 
   reset(): void {
-    const ptr = this.ptr;
-    Object.assign(this, new Track(), { ptr, flags: FLG_EXIST });
+    const { ptr, index } = this;
+    Object.assign(this, new Track(), { ptr, index, flags: FLG_EXIST });
   }
 }
 
@@ -128,7 +147,11 @@ class Player {
   readonly dsOut = new Float32Array(DS_SAMPLES);
   readonly tracks: Track[];
   readonly bytes: Uint8Array;
-  readonly voices: Record<string, number[]>;
+  readonly voices: Record<string, number[] | number | ToneRec>;
+  readonly mixer: any;
+  // frames at which the first track jumped backwards (its loop GOTO)
+  readonly loops: number[] = [];
+  private waveLoaded: any = null;
   tempoD = 150;
   tempoI = 150;
   tempoC = 0;
@@ -144,7 +167,9 @@ class Player {
   constructor(readonly song: SongData, readonly tables: Tables) {
     this.bytes = song.bytes ?? Uint8Array.from(atob(song.b ?? ''), (c) => c.charCodeAt(0));
     this.voices = song.v;
-    this.tracks = song.t.map((ptr) => Object.assign(new Track(), { ptr, flags: FLG_EXIST | FLG_START }));
+    this.tracks = song.t.map((ptr, index) => Object.assign(new Track(), { ptr, index, flags: FLG_EXIST | FLG_START }));
+    // MPlayStart: a header reverb byte with 0x80 set is passed to m4aSoundMode
+    this.mixer = new DsMixer(song.r & 0x80 ? song.r & 0x7f : 0);
   }
 
   private byte(track: Track): number {
@@ -177,7 +202,7 @@ class Player {
       if (this.playing) for (const track of this.tracks) if (track.flags & FLG_EXIST && track.flags & (FLG_VOLCHG | FLG_PITCHG)) this.applyTrack(track);
     }
     this.cgbSound();
-    dsFrame(this.ds, this.dsOut);
+    this.mixer.frame(this.ds, this.dsOut);
     this.frames++;
   }
 
@@ -189,7 +214,10 @@ class Player {
       }
       if (chan.gate && --chan.gate === 0) chan.sf |= SF_STOP;
     }
-    if (track.flags & FLG_START) track.reset();
+    if (track.flags & FLG_START) {
+      track.reset();
+      if (this.song.pitX) track.flags |= FLG_PITCHG;
+    }
     while (track.wait === 0 && track.flags & FLG_EXIST) {
       let cmd = this.bytes[track.ptr];
       if (cmd < 0x80) cmd = track.running;
@@ -221,9 +249,12 @@ class Player {
   private command(track: Track, cmd: number): void {
     const arg = () => this.byte(track);
     switch (cmd) {
-      case 0xb2:
-        track.ptr = this.word(track.ptr);
+      case 0xb2: {
+        const target = this.word(track.ptr);
+        if (track.index === 0 && target < track.ptr) this.loops.push(this.frames);
+        track.ptr = target;
         break;
+      }
       case 0xb3:
         if (track.level >= 3) return this.fine(track);
         track.stack[track.level++] = track.ptr + 4;
@@ -258,9 +289,10 @@ class Player {
         break;
       case 0xbd: {
         const index = arg();
-        const tone = this.voices[index];
-        if (!tone) throw new Error('voice missing from audio data');
-        track.tone = toneFrom(tone);
+        const entry = this.voices[index];
+        // a voice no note of this song reaches is not in the data: keep it silent
+        const rec = typeof entry === 'number' ? this.song.tones?.[entry] : Array.isArray(entry) ? { b: entry } : entry;
+        track.tone = rec ? { ...toneFrom(rec.b), rec } : toneFrom([0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         track.wave = this.song.w?.[index] ?? null;
         break;
       }
@@ -382,7 +414,7 @@ class Player {
       track.volML = ((127 - y) * x) >>> 8;
     }
     if (track.flags & FLG_PITSET) {
-      let x = (track.tune + track.bend * track.bendRange) * 4 + (track.keyShift << 8);
+      let x = (track.tune + track.bend * track.bendRange) * 4 + (track.keyShift << 8) + (this.song.pitX ?? 0);
       if (track.modT === 0) x += 16 * track.modM;
       track.keyM = x >> 8;
       track.pitM = x & 0xff;
@@ -391,8 +423,8 @@ class Player {
   }
 
   private chnVolSet(chan: CgbChan, track: Track): void {
-    chan.rightVolume = Math.min(255, (chan.velocity * 128 * track.volMR) >> 14);
-    chan.leftVolume = Math.min(255, (chan.velocity * 127 * track.volML) >> 14);
+    chan.rightVolume = Math.min(255, (chan.velocity * (0x80 + chan.rhythmPan) * track.volMR) >> 14);
+    chan.leftVolume = Math.min(255, (chan.velocity * (0x7f - chan.rhythmPan) * track.volML) >> 14);
   }
 
   private cgbFreq(chanNum: number, key: number, fine: number): number {
@@ -423,12 +455,33 @@ class Player {
         if (this.bytes[track.ptr] < 0x80) track.gate += this.byte(track);
       }
     }
-    const tone = track.tone;
-    // drumset and keysplit voices need DirectSound data, which build-audio.mjs refuses for now
-    if (tone.type & 0xc0) return;
+    let tone = track.tone;
+    let key = track.key;
+    let rhythmPan = 0;
+    if (tone.type & 0xc0) {
+      // key split: the split table picks the group entry; drumset: the note picks it, and plays at its base key
+      const rec = tone.rec;
+      if (!rec || rec.g === undefined) return;
+      const index = tone.type & 0x40 ? rec.g + (this.song.splits?.[rec.k ?? '']?.[track.key] ?? 0) : rec.g + track.key;
+      const subRec = this.song.tones?.[index];
+      if (!subRec) return;
+      const sub: Tone = { ...toneFrom(subRec.b), rec: subRec };
+      if (sub.type & 0xc0) return;
+      if (tone.type & 0x80) {
+        if (sub.panSweep & 0x80) rhythmPan = s8((sub.panSweep - 0xc0) * 2);
+        key = sub.key;
+      }
+      tone = sub;
+    }
+    const priority = Math.min(255, track.priority + this.song.p);
     const num = tone.type & TYPE_CGB;
-    if (!num) return this.dsNote(track, tone);
+    if (!num) return this.dsNote(track, tone, key, rhythmPan, priority);
     const chan = this.cgb[num - 1];
+    // ply_note: a sounding CGB channel of higher priority, or equal priority from an earlier track, keeps playing
+    if (chan.sf & SF_ON && !(chan.sf & SF_STOP)) {
+      if (chan.priority > priority) return;
+      if (chan.priority === priority && chan.track && chan.track.index < track.index) return;
+    }
     chan.track?.chans.delete(chan);
     track.chans.add(chan);
     chan.track = track;
@@ -438,10 +491,11 @@ class Player {
     chan.gate = track.gate;
     chan.midiKey = track.key;
     chan.velocity = track.velocity;
-    chan.priority = Math.min(255, (track.priority + this.song.p) | 0);
-    chan.key = track.key;
+    chan.priority = priority;
+    chan.key = key;
+    chan.rhythmPan = rhythmPan;
     chan.type = tone.type;
-    chan.wav = tone.wav;
+    chan.wav = num === 3 ? (this.song.waves?.[tone.rec?.w ?? ''] ?? null) : tone.wav;
     chan.attack = tone.attack;
     chan.decay = tone.decay;
     chan.sustain = tone.sustain;
@@ -449,19 +503,50 @@ class Player {
     chan.echoVol = track.echoVol;
     chan.echoLen = track.echoLen;
     this.chnVolSet(chan, track);
-    const key = Math.max(0, chan.key + track.keyM);
     chan.length = tone.length;
     chan.sweep = tone.panSweep & 0x80 || !(tone.panSweep & 0x70) ? 8 : tone.panSweep;
-    chan.frequency = this.cgbFreq(num, key, track.pitM);
+    chan.frequency = this.cgbFreq(num, Math.max(0, chan.key + track.keyM), track.pitM);
     chan.sf = SF_START;
     track.flags &= 0xf0;
     this.notes.push([this.frames, num, chan.frequency]);
   }
 
-  // ply_note's DirectSound half: take a free channel, else one already stopping, else the first
-  private dsNote(track: Track, tone: Tone): void {
-    if (!track.wave || tone.type & 0x10) return;
-    const chan = this.ds.find((c) => !(c.sf & SF_ON)) ?? this.ds.find((c) => c.sf & SF_STOP) ?? this.ds[0];
+  // ply_note's DirectSound half: a free channel, else the stopping one, else the lowest priority (ties go to the
+  // latest track at or after this one)
+  private pickDs(track: Track, priority: number): CgbChan | null {
+    let best: CgbChan | null = null;
+    let pri = priority;
+    let idx = track.index;
+    let stopping = false;
+    for (const c of this.ds) {
+      if (!(c.sf & SF_ON)) return c;
+      const cIdx = c.track ? c.track.index : -1;
+      if (c.sf & SF_STOP) {
+        if (!stopping) {
+          stopping = true;
+          pri = c.priority;
+          idx = cIdx;
+          best = c;
+          continue;
+        }
+      } else if (stopping) continue;
+      if (c.priority < pri) {
+        pri = c.priority;
+        idx = cIdx;
+        best = c;
+      } else if (c.priority === pri && cIdx >= idx) {
+        idx = cIdx;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  private dsNote(track: Track, tone: Tone, key: number, rhythmPan: number, priority: number): void {
+    const wave = tone.rec?.s ? this.song.samples?.[tone.rec.s] : track.wave;
+    if (!wave || tone.type & 0x10) return;
+    const chan = this.pickDs(track, priority);
+    if (!chan) return;
     chan.track?.chans.delete(chan);
     track.chans.add(chan);
     chan.track = track;
@@ -471,9 +556,11 @@ class Player {
     chan.gate = track.gate;
     chan.midiKey = track.key;
     chan.velocity = track.velocity;
-    chan.key = track.key;
+    chan.priority = priority;
+    chan.key = key;
+    chan.rhythmPan = rhythmPan;
     chan.type = tone.type;
-    chan.wave = track.wave;
+    chan.wave = wave;
     chan.attack = tone.attack;
     chan.decay = tone.decay;
     chan.sustain = tone.sustain;
@@ -512,8 +599,9 @@ class Player {
     track.flags &= 0xf0;
   }
 
+  // CgbModVol in mono mode (Emerald's default sound option sets SoundInfo.mode bit 0): no pan, no clamp at 15
   private modVol(chan: CgbChan): void {
-    chan.envGoal = Math.min(15, (chan.leftVolume + chan.rightVolume) >> 4);
+    chan.envGoal = ((chan.leftVolume + chan.rightVolume) >> 4) & 0xff;
     chan.sustainGoal = (chan.envGoal * chan.sustain + 15) >> 4;
   }
 
@@ -538,6 +626,11 @@ class Player {
             envStep = c.attack + ENV_INC;
             c.n4 = c.length ? 0x40 : 0;
           } else if (ch === 3) {
+            if (c.wav !== this.waveLoaded) {
+              this.apu.write(3, 0, 0x40);
+              this.apu.setWave(c.wav);
+              this.waveLoaded = c.wav;
+            }
             this.apu.write(3, 0, 0);
             this.apu.write(3, 1, c.length);
             c.n4 = c.length ? 0xc0 : 0x80;
@@ -659,7 +752,7 @@ class Player {
     }
     if (c.modify & MO_VOL) {
       if (ch === 3) {
-        this.apu.write(3, 2, this.tables.cgb3Vol[c.envVol]);
+        this.apu.write(3, 2, this.tables.cgb3Vol[c.envVol] ?? 0);
         if (c.n4 & 0x80) {
           this.apu.write(3, 0, 0x80);
           this.apu.write(3, 4, c.n4);
@@ -677,26 +770,126 @@ class Player {
   }
 }
 
-// mono FIFO mixing at half volume: 2 * (A + B) of the 10-bit output; the CGB steps above are already 4x their
-// share of that range, so DirectSound gets the same lift. Tune by ear
-const DS_LEVEL = 1 / 128;
+// mono FIFO mixing at half volume: 2 * (A + B) of the 10-bit output, so the two 8-bit buffers at full scale reach
+// 1.0. The CGB step size (0.5 / 15 per volume step) is an estimate; tune by ear
+const DS_LEVEL = 1 / 256;
 
-// renders a song at `rate` Hz, mono, until the sequence has ended and every channel is off
-function renderSong(song: SongData, tables: Tables, rate: number, scale: number): { samples: Float32Array; frames: number; endFrame: number; fineFrame: number; notes: [number, number, number][] } {
-  const player = new Player(song, tables);
-  const ticksPerFrame = FRAME_TICKS;
-  const out = new Float32Array(Math.ceil(((MAX_FRAMES + 2) * ticksPerFrame * rate) / (1 << 20)));
-  const at = { index: 0, acc: 0, sum: 0, count: 0 };
-  // the 8-bit DirectSound buffers sum to -256..254; DS_LEVEL maps that onto the output, in CGB volume steps
-  const dsUnits = DS_LEVEL / scale;
-  while (player.sounding && player.frames < MAX_FRAMES) {
-    player.frame();
-    player.apu.run(ticksPerFrame, out, at, rate, scale, player.dsOut, dsUnits);
+type RenderOptions = { maxFrames?: number; stride?: number; loops?: number };
+type RenderResult = { samples: Float32Array; frames: number; endFrame: number; fineFrame: number; notes: [number, number, number][]; loops: number[]; frameStarts: number[] };
+
+// steps a song frame by frame into `rate` Hz mono samples; `loops` stops it after that many loop GOTOs on the first
+// track, and frameStarts[f] is the output index where frame f begins (the loop points come from these)
+class Renderer {
+  readonly player: Player;
+  private readonly chunks: Float32Array[] = [];
+  private chunk: Float32Array;
+  private readonly at = { index: 0, acc: 0, sum: 0, count: 0 };
+  private readonly frameStarts: number[] = [];
+  private readonly dsUnits: number;
+  private readonly maxFrames: number;
+  private readonly stride: number;
+  private readonly loopsWanted: number;
+  done = false;
+
+  constructor(song: SongData, tables: Tables, readonly rate: number, readonly scale: number, opts: RenderOptions = {}) {
+    this.player = new Player(song, tables);
+    this.maxFrames = opts.maxFrames ?? MAX_FRAMES;
+    this.stride = opts.stride ?? 1;
+    this.loopsWanted = opts.loops ?? 0;
+    // the 8-bit DirectSound buffers sum to -256..254; DS_LEVEL maps that onto the output, in CGB volume steps
+    this.dsUnits = DS_LEVEL / scale;
+    this.chunk = new Float32Array(Math.ceil((FRAME_TICKS * rate) / (1 << 20)) * 64 + 8);
   }
-  // a cry's player keeps running (the 140-frame wait) after its sample ends: drop the silent tail
-  let end = Math.min(at.index, out.length);
-  while (end > 0 && Math.abs(out[end - 1]) < 1e-6) end--;
-  return { samples: out.slice(0, end), frames: player.frames, endFrame: player.endFrame, fineFrame: player.fineFrame, notes: player.notes };
+
+  // runs up to `frames` frames; true once the song is over
+  step(frames: number): boolean {
+    const p = this.player;
+    for (let n = 0; n < frames && !this.done; n++) {
+      if (!p.sounding || p.frames >= this.maxFrames || (this.loopsWanted && p.loops.length >= this.loopsWanted)) {
+        this.done = true;
+        break;
+      }
+      this.frameStarts.push(this.base() + this.at.index);
+      p.frame();
+      p.apu.run(FRAME_TICKS, this.chunk, this.at, this.rate, this.scale, p.dsOut, this.dsUnits, this.stride);
+      if (this.at.index > this.chunk.length - Math.ceil((FRAME_TICKS * this.rate) / (1 << 20)) - 8) this.flush();
+    }
+    return this.done;
+  }
+
+  private base(): number {
+    return this.chunks.reduce((sum, c) => sum + c.length, 0);
+  }
+
+  private flush(): void {
+    this.chunks.push(this.chunk.slice(0, this.at.index));
+    this.at.index = 0;
+  }
+
+  result(trim: boolean): RenderResult {
+    this.flush();
+    const total = this.base();
+    const samples = new Float32Array(total);
+    let at = 0;
+    for (const c of this.chunks) {
+      samples.set(c, at);
+      at += c.length;
+    }
+    this.chunks.length = 0;
+    let end = total;
+    // a cry's player keeps running (the 140-frame wait) after its sample ends: drop the silent tail
+    if (trim) while (end > 0 && Math.abs(samples[end - 1]) < 1e-6) end--;
+    const p = this.player;
+    return { samples: end === total ? samples : samples.slice(0, end), frames: p.frames, endFrame: p.endFrame, fineFrame: p.fineFrame, notes: p.notes, loops: p.loops, frameStarts: this.frameStarts };
+  }
 }
 
-seqLib.seq = { Player, renderSong };
+// one-pole high-pass, in place: the music bus's stand-in for the GBA's output coupling capacitor and small speaker,
+// which take the edge off the low end that a line-level render keeps
+function highPass(x: Float32Array, rate: number, cornerHz: number): void {
+  const a = Math.exp((-2 * Math.PI * cornerHz) / rate);
+  let prevIn = 0;
+  let prevOut = 0;
+  for (let i = 0; i < x.length; i++) {
+    const v = x[i];
+    prevOut = a * (prevOut + v - prevIn);
+    prevIn = v;
+    x[i] = prevOut;
+  }
+}
+
+// cuts a render that ran to its second loop GOTO down to the intro plus one loop body. The audio before each seam
+// fades over `fade` samples into the end of the first pass, which leads straight into the loop start, so neither
+// the intro join nor the loop wrap jumps between free-running oscillator phases
+function loopCut(r: RenderResult, fade: number): { samples: Float32Array; loopStart: number; loopEnd: number } | null {
+  if (r.loops.length < 2) return null;
+  const [g1, g2] = r.loops;
+  const b0 = g1 - (g2 - g1);
+  if (b0 < 0) return null;
+  const src = r.samples;
+  const s0 = r.frameStarts[b0];
+  const s1 = r.frameStarts[g1];
+  const s2 = r.frameStarts[g2];
+  const out = new Float32Array(s0 + (s2 - s1));
+  out.set(src.subarray(0, s0), 0);
+  out.set(src.subarray(s1, s2), s0);
+  const blend = (end: number, from: number) => {
+    const n = Math.min(fade, end, s1);
+    for (let i = 0; i < n; i++) {
+      const w = (i + 1) / n;
+      out[end - n + i] = out[end - n + i] * (1 - w) + src[s1 - n + i] * w;
+    }
+  };
+  blend(s0, s0);
+  blend(out.length, s2);
+  return { samples: out, loopStart: s0, loopEnd: out.length };
+}
+
+// renders a song at `rate` Hz, mono, until the sequence has ended and every channel is off
+function renderSong(song: SongData, tables: Tables, rate: number, scale: number): RenderResult {
+  const r = new Renderer(song, tables, rate, scale);
+  while (!r.step(1000));
+  return r.result(true);
+}
+
+seqLib.seq = { Player, Renderer, renderSong, loopCut, highPass };

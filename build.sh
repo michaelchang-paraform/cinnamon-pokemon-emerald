@@ -75,11 +75,6 @@ sh source/partners/download.sh
 
 step "fetch the sound sources (pret/pokeemerald)"
 sh source/audio/download.sh
-AUDIO_SPARSE=source/audio/download/pokeemerald/.git/info/sparse-checkout
-if ! grep -q 'include/constants/pokedex.h' "$AUDIO_SPARSE"; then
-  echo '/include/constants/pokedex.h' >> "$AUDIO_SPARSE"
-  git -C source/audio/download/pokeemerald sparse-checkout reapply
-fi
 
 step "fetch the ball and partner sprites"
 sh source/sprites/download-balls.sh
@@ -87,6 +82,9 @@ for n in 252 255 258; do
   cp "source/battle/download/pokeapi-sprites/sprites/pokemon/versions/generation-iii/emerald/$n.png" "source/sprites/download/emerald-$n.png"
 done
 python3 source/sprites/crop-sprites.py
+
+step "fetch the item icons (pret/pokeemerald)"
+sh source/sprites/download-items.sh
 
 step "fetch the fonts"
 mkdir -p source/fonts/download
@@ -104,6 +102,8 @@ node source/theme/build-theme.mjs
 
 step "build the sprites and the icons"
 node source/sprites/build-sprites.mjs
+python3 source/sprites/item-list.py
+node source/sprites/build-items.mjs
 node source/icons/build-icons.mjs
 
 step "build the battle data"
@@ -114,11 +114,6 @@ node source/partners/build-assets.mjs
 node source/partners/build-ui.mjs
 
 step "build the sounds"
-# build-audio.mjs compiles mid2agb itself, but it does not find the wav2agb sources, so compile wav2agb here
-mkdir -p source/audio/tools
-if [ ! -x source/audio/tools/wav2agb ]; then
-  c++ -std=c++17 -O2 -o source/audio/tools/wav2agb source/audio/download/pokeemerald/tools/wav2agb/*.cpp
-fi
 node source/audio/build-audio.mjs
 
 step "check the generated files"
@@ -130,5 +125,6 @@ for manifest in extension-*/manifest.json; do
   done
 done
 [ -s themes/pokemon-emerald.json ] || { echo "missing: themes/pokemon-emerald.json" >&2; missing=1; }
+[ -s extension-theme/items.ts ] || { echo "missing: extension-theme/items.ts" >&2; missing=1; }
 [ "$missing" -eq 0 ] || exit 1
 echo "The build is complete. Run ./install.sh to install the theme and the extensions."

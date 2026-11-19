@@ -47,6 +47,7 @@ for f in healthbox_singles_player.png hpbar.png; do fetch "graphics/battle_inter
 fetch "graphics/fonts/latin_small.png" "$OUT/fonts/latin_small.png"
 fetch "graphics/fonts/latin_normal.png" "$OUT/fonts/latin_normal.png"
 fetch "graphics/battle_interface/text_pp.pal" "$OUT/battle/text_pp.pal"
+fetch "graphics/battle_anims/sprites/gold_stars.png" "$OUT/battle/gold_stars.png"
 fetch "graphics/summary_screen/move_select.png" "$OUT/summary/move_select.png"
 fetch "src/data/pokemon_graphics/front_pic_anims.h" "$OUT/src/front_pic_anims.h"
 fetch "src/fonts.c" "$OUT/src/fonts.c"

@@ -22,10 +22,11 @@ const SWAP_TEXT = ['nam-page_swap_lower', 'nam-page_swap_others', 'nam-page_swap
 // the game's button captions (SELECT, B BUTTON, START) replaced by the keys that do the same here
 const BUTTONS: Array<{ img: string | null; x: number; y: number; w: number; h: number; cap: [number, number, number, number]; ring: { x: number; y: number; w: number; h: number }; key: string; label: string }> = [
   { img: 'nam-page_swap_frame', x: 184, y: 72, w: 40, h: 32, cap: [4, 19, 34, 8], ring: { x: 186, y: 76, w: 35, h: 14 }, key: 'TAB', label: 'Change page' },
-  { img: 'nam-back_button', x: 184, y: 104, w: 40, h: 24, cap: [4, 16, 34, 8], ring: { x: 186, y: 105, w: 35, h: 13 }, key: 'DELETE', label: 'Delete' },
+  { img: 'nam-back_button', x: 184, y: 104, w: 40, h: 24, cap: [3, 16, 35, 8], ring: { x: 186, y: 105, w: 35, h: 13 }, key: 'DELETE', label: 'Delete' },
   { img: 'nam-ok_button', x: 184, y: 128, w: 40, h: 24, cap: [6, 14, 30, 8], ring: { x: 186, y: 129, w: 35, h: 10 }, key: 'RETURN', label: 'OK' },
 ];
-const BASE_X = 92;
+// inputCharBaseXPos for a 10-character name: (240 - 80) / 2 + 6
+const BASE_X = 86;
 const LIGHT: [string, string] = ['ffffff', '626262'];
 const INK: [string, string] = ['393939', 'd5d5cd'];
 
@@ -80,6 +81,8 @@ class Naming {
     this.screen.root.append(input);
     host.querySelector(':scope > .pkp-gba:not(.pkp-naming)')?.setAttribute('hidden', '');
     host.append(this.screen.root);
+    // typing goes to the hidden input only while the naming screen holds focus: a click on it takes focus back
+    this.screen.root.addEventListener('pointerdown', R.guard(() => requestAnimationFrame(() => this.input?.focus({ preventScroll: true }))));
     input.focus({ preventScroll: true });
     void this.render();
   }
@@ -219,16 +222,21 @@ class Naming {
     screen.text(`${mon.name}'s nickname?`, 72, 33, INK, { inside: { x: 64, y: 32, w: 136, h: 16 }, name: 'title' });
 
     const shown = [...this.chars, ...[...this.composing]].slice(0, NAME_MAX);
-    shown.forEach((ch, i) => screen.text(ch, BASE_X + i * 8, 49, INK, { center: 8, name: `char ${i + 1}`, inside: { x: 64, y: 48, w: 136, h: 16 } }));
+    shown.forEach((ch, i) => screen.text(ch, BASE_X + i * 8, 49, INK, { name: `char ${i + 1}`, inside: { x: 64, y: 48, w: 136, h: 16 } }));
+    // TryDrawGenderIcon: POKEMON_NAME_LENGTH * 4 + 64 into the entry window at x 64
+    if (mon.gender && !((mon.species === 29 || mon.species === 32) && !this.chars.length)) {
+      screen.text(mon.gender === 'M' ? '\u2642' : '\u2640', 168, 49, mon.gender === 'M' ? ['41cdff', '008bbd'] : ['ff9c94', 'bd5a52'], { name: 'gender', inside: { x: 64, y: 48, w: 136, h: 16 } });
+    }
     for (let i = 0; i < NAME_MAX; i++) screen.image(under, BASE_X + i * 8, 56 + (i === Math.min(shown.length, NAME_MAX - 1) ? 1 : 0));
     screen.image(arrow, BASE_X - 9, 52);
 
-    const cell = this.page === 2 ? 20 : 12;
+    // the cursor is the game's 16 px sprite centred at sPageColumnXPos + 38; each key is centred in that cell
+    const cell = 16;
     KEYS[this.page].forEach((row, y) => {
       COLUMNS[this.page].forEach((cx, x) => {
         const ch = row[x];
-        const rect = { x: 24 + cx, y: 80 + y * 16, w: cell, h: 16 };
-        if (ch !== ' ') screen.text(ch, rect.x, rect.y, LIGHT, { center: cell, name: `key ${ch}`, inside: { x: 24, y: 80, w: 152, h: 64 } });
+        const rect = { x: cx + 30, y: 80 + y * 16, w: cell, h: 16 };
+        if (ch !== ' ') screen.text(ch, rect.x, rect.y + 1, LIGHT, { center: cell, name: `key ${ch}`, inside: { x: 24, y: 80, w: 152, h: 64 } });
         screen.hit(rect, ch === ' ' ? 'Space' : `Type ${ch}`, () => {
           this.onButtons = false;
           this.x = x;
@@ -266,9 +274,8 @@ class Naming {
       right = rect.x - 6;
     }
     if (!this.onButtons) {
-      screen.cursor({ x: 24 + COLUMNS[this.page][this.x], y: 80 + this.y * 16, w: cell, h: 16 }, 'ff0808', 'ffbd73', 'key cursor');
+      screen.cursor({ x: COLUMNS[this.page][this.x] + 30, y: 81 + this.y * 16, w: cell, h: 16 }, 'ff0808', 'ffbd73', 'key cursor');
     }
-    this.input?.focus({ preventScroll: true });
   }
 }
 

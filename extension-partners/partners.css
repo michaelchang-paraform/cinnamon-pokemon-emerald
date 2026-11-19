@@ -29,7 +29,7 @@
   background-position: calc(var(--pkp-u, 1.5px) * -4) calc(var(--pkp-u, 1.5px) * -7);
 }
 [data-pkp-row] > [data-row-main-button] > :is([data-row-label], .cm-top, .cm-bottom) {
-  margin-inline-start: calc(var(--pkp-u, 1.5px) * 26) !important;
+  margin-inline-start: var(--pkp-label-shift, calc(var(--pkp-u, 1.5px) * 26)) !important;
 }
 /* on a sidebar card the icon centres on the title, the card's first line */
 [data-cm-card] > .pkp-ri {
@@ -96,6 +96,11 @@
   animation: pkp-arrow 0.6s steps(1, end) infinite;
 }
 
+/* the partner's reserved column at the start of each assistant row when the gutter is too narrow for it */
+[data-pkp-av-col] [data-testid="transcript-row"]:is([data-perf-row="assistant"], [data-perf-row="marker"]) [data-transcript-row] {
+  box-sizing: border-box;
+  padding-inline-start: var(--pkp-av-col, 0px) !important;
+}
 /* the trainer's reserved column at the end of its message row: the bubble gives up that width */
 [data-pkp-tr-row] [data-cds="UserMessage"] {
   box-sizing: border-box;
@@ -120,6 +125,9 @@
 [data-testid="transcript-row"]:hover > .pkp-tr::after,
 [data-pkp-show-label] > .pkp-tr::after {
   opacity: 1;
+}
+.pkp-tr[data-no-label]::after {
+  display: none;
 }
 
 /* Evolution scene */
@@ -192,6 +200,7 @@
   image-rendering: pixelated;
 }
 .pkp-set-open,
+.pkp-set-select,
 .pkp-set-reset {
   padding: calc(var(--pkp-u, 1.5px) * 1) calc(var(--pkp-u, 1.5px) * 4);
   border: var(--pe-bpx, 1px) solid var(--pe-rule, rgb(128 128 128 / 0.4));
@@ -335,15 +344,71 @@
   place-items: center;
   background: rgb(0 0 0 / 0.45);
 }
+/* the dialog never scrolls as a whole: the header and the side column (preview, swatches, name) stay pinned and only
+   the trainer grid scrolls, with its own scrollbar */
 .pkp-trainer-box {
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   width: min(calc(var(--pkp-u, 1.5px) * 420), calc(100vw - 32px));
   max-height: calc(100vh - 32px);
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
+}
+.pkp-trainer-box > .pkp-trainer-head {
+  flex: none;
 }
 .pkp-trainer-box > .pkp-set-panel {
+  flex: 1 1 auto;
+  min-height: 0;
   margin: 0;
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);
+}
+.pkp-set-side {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--pkp-u, 1.5px) * 4);
+  min-height: 0;
+}
+/* side by side: a narrow preview column sized to the sprite and a 10-letter name, swatches stacked under it */
+.pkp-trainer-box:not(.is-stacked) > .pkp-set-panel {
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+.pkp-trainer-box:not(.is-stacked) .pkp-set-side {
+  width: calc(var(--pkp-u, 1.5px) * 96);
+}
+.pkp-trainer-box:not(.is-stacked) .pkp-set-side .pkp-set-colors {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+.pkp-trainer-box:not(.is-stacked) .pkp-set-side .pkp-set-color {
+  justify-content: space-between;
+}
+.pkp-trainer-box .pkp-set-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: calc(var(--pkp-u, 1.5px) * 2);
+}
+/* too narrow for three grid columns beside the preview: a compact pinned strip on top, the grid below */
+.pkp-trainer-box.is-stacked > .pkp-set-panel {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.pkp-trainer-box.is-stacked .pkp-set-side {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--pkp-u, 1.5px) * 4) calc(var(--pkp-u, 1.5px) * 8);
+}
+.pkp-trainer-box.is-stacked .pkp-set-preview {
+  flex-direction: row;
+  padding: calc(var(--pkp-u, 1.5px) * 2) calc(var(--pkp-u, 1.5px) * 4);
+}
+.pkp-trainer-box.is-stacked .pkp-set-big {
+  width: calc(var(--pkp-u, 1.5px) * 16);
+  height: calc(var(--pkp-u, 1.5px) * 32);
 }
 .pkp-trainer-head {
   display: flex;
@@ -403,16 +468,6 @@
 }
 
 /* GBA screens: 240x160 sprite pixels at the theme's scale */
-.pkp-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 2147483200;
-  display: grid;
-  place-items: center;
-  background: rgb(0 0 0 / 0.45);
-  outline: none;
-  animation: pkp-fade-in 0.15s ease-out;
-}
 /* the summary popup: a floating window like the battle's, title bar at the theme pixel (--pkp-tu) */
 .pkp-popup {
   position: fixed;
@@ -694,5 +749,42 @@ html :is(.pkp-popup-title, .pkp-popup-title *):not(#_):not(#_) {
   .pkp-naming-cursor,
   .pkp-naming-bar {
     animation: none !important;
+  }
+}
+
+/* the shiny sparkle, over everything, drawn at GBA pixels and scaled without smoothing */
+.pkp-sparkle {
+  position: fixed;
+  z-index: 2147483000;
+  pointer-events: none;
+  image-rendering: pixelated;
+}
+
+.pkp-set-select {
+  background: var(--df-bg-page, transparent);
+}
+
+/* the trainer walking in place on hover or focus: sAnim_GoSouth, 8 of the GBA's 59.7275 Hz frames per pose */
+.pkp-tr[data-walk] {
+  background-image: var(--pkp-trainer-walk, var(--pkp-trainer));
+  background-size: 400% 100%;
+  animation: pkp-walk calc(32s / 59.7275) steps(4, end) infinite;
+}
+html[data-pkp-hidden] .pkp-tr[data-walk] {
+  animation-play-state: paused;
+}
+@keyframes pkp-walk {
+  from {
+    background-position-x: 0%;
+  }
+  to {
+    background-position-x: 133.3333%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pkp-tr[data-walk] {
+    background-image: var(--pkp-trainer);
+    background-size: 100% 100%;
+    animation: none;
   }
 }

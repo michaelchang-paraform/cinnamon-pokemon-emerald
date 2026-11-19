@@ -26,7 +26,32 @@ type FontName = 'normal' | 'small' | 'narrow';
 type TextOpts = { font?: FontName; color?: string | ColorPair; width?: number; lineHeight?: number; align?: 'left' | 'right' | 'center' };
 
 const ns = (window as any).__pkb;
-const { el, report, toId, upper, cssString, decodeBase64, place, CURSOR_COL } = ns;
+const { el, report, toId, upper, cssString, decodeBase64, place, CURSOR_COL, cleanups } = ns;
+// marks a waiting label: drawn as 0 to 3 looping dots, laid out as '...' so nothing shifts
+const WAIT = '\u0007';
+let glyphRun = 0;
+const DOT_MS = 450;
+const waiting = new Map<HTMLCanvasElement, () => void>();
+let dotStep = 3;
+let dotTimer = 0;
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+function tickDots(): void {
+  if (document.hidden) return;
+  dotStep = (dotStep + 1) % 4;
+  for (const [canvas, render] of waiting) {
+    if (!canvas.isConnected) waiting.delete(canvas);
+    else if (canvas.getClientRects().length) render();
+  }
+  if (!waiting.size) {
+    clearInterval(dotTimer);
+    dotTimer = 0;
+  }
+}
+cleanups.push(() => clearInterval(dotTimer));
+function forceDots(step: number): void {
+  dotStep = step;
+  for (const render of waiting.values()) render();
+}
 
 const EXTRA_COLORS: Record<string, ColorPair> = {
   white: [[255, 255, 255], [74, 74, 74]],
@@ -156,11 +181,13 @@ class Assets {
   }
 
   moveType(id: string, name: string): string {
+    // gTypeNames (battle_main.c) caps type names at 6 letters
+    const game = (type: string) => ({ FIGHTING: 'FIGHT', ELECTRIC: 'ELECTR', PSYCHIC: 'PSYCHC' })[upper(type)] ?? upper(type);
     const hidden = /^Hidden Power (\w+)/.exec(name);
-    if (hidden) return upper(hidden[1]);
+    if (hidden) return game(hidden[1]);
     const data = this.data;
     const index = data?.moves[id] ?? data?.moves[toId(name)] ?? data?.moves[id.replace(/\d+$/, '')];
-    return index === undefined || !data ? '???' : upper(data.types[index]);
+    return index === undefined || !data ? '???' : game(data.types[index]);
   }
 
   colors(color: string | ColorPair): ColorPair {
@@ -200,7 +227,7 @@ class Assets {
   measure(text: string, font: FontName = 'normal'): number {
     const widths = this.data?.fonts[font]?.w ?? [];
     let width = 0;
-    for (const ch of text) width += ch === ' ' ? widths[0] ?? 3 : ch === '~' ? 6 : widths[this.code(ch)] ?? 6;
+    for (const ch of text) width += ch === WAIT ? this.measure('...', font) : ch === ' ' ? widths[0] ?? 3 : ch === '~' ? 6 : widths[this.code(ch)] ?? 6;
     return width;
   }
 
@@ -230,6 +257,7 @@ class Assets {
   draw(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, font: FontName = 'normal', color: string | ColorPair = 'menu'): number {
     const sheet = this.sheet(font, this.colors(color));
     const widths = this.data?.fonts[font]?.w ?? [];
+    const run = ns.glyphLog ? ++glyphRun : 0;
     let cx = x;
     for (const ch of text) {
       if (ch === ' ') {
@@ -242,10 +270,33 @@ class Assets {
         continue;
       }
       const code = this.code(ch);
-      if (sheet) ctx.drawImage(sheet, (code % 16) * 16, Math.floor(code / 16) * 16, 16, 16, cx, y, 16, 16);
+      // CopyGlyphToWindow copies only the glyph's advance width; columns past it hold the next glyph's pixels
+      const span = this.glyphSpan(font, code);
+      if (sheet && span.w > 0) ctx.drawImage(sheet, (code % 16) * 16, Math.floor(code / 16) * 16, span.w, span.h, cx, y, span.w, span.h);
+      ns.glyphLog?.push({ run, ch, font, x: cx, code, w: span.w, h: span.h });
       cx += widths[code] ?? 6;
     }
     return cx - x;
+  }
+
+  glyphSpan(font: FontName, code: number): { w: number; h: number } {
+    return { w: this.data?.fonts[font]?.w[code] ?? 6, h: font === 'small' ? 13 : 15 };
+  }
+
+  inkCols(font: FontName, code: number): [number, number] | null {
+    const mask = this.fontMasks.get(font);
+    if (!mask) return null;
+    const { w, h } = this.glyphSpan(font, code);
+    const ox = (code % 16) * 16;
+    const oy = Math.floor(code / 16) * 16;
+    let lo = 99, hi = -1;
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++)
+        if (mask.data[((oy + y) * mask.width + ox + x) * 4 + 3]) {
+          lo = Math.min(lo, x);
+          hi = Math.max(hi, x);
+        }
+    return hi < 0 ? null : [lo, hi];
   }
 
   private tilde(ctx: CanvasRenderingContext2D, x: number, y: number, font: FontName, color: string | ColorPair): void {
@@ -267,8 +318,9 @@ class Assets {
   paint(canvas: HTMLCanvasElement, text: string, opts: TextOpts = {}): void {
     const font = opts.font ?? 'normal';
     const lineHeight = opts.lineHeight ?? this.data?.fonts[font]?.h ?? 16;
-    canvas.dataset.text = text.slice(0, 40);
+    canvas.dataset.text = text.replaceAll(WAIT, '...').slice(0, 40);
     const lines = text.split('\n');
+    const animated = text.includes(WAIT);
     const width = opts.width ?? Math.max(1, ...lines.map((line) => this.measure(line, font)));
     const height = Math.max(1, lines.length * lineHeight);
     if (canvas.width !== width) canvas.width = width;
@@ -278,12 +330,17 @@ class Assets {
     const render = () => {
       const ctx = canvas.getContext('2d')!;
       ctx.clearRect(0, 0, width, height);
+      const dots = '.'.repeat(reducedMotion() ? 3 : dotStep);
       lines.forEach((line, i) => {
         const w = this.measure(line, font);
         const x = opts.align === 'right' ? width - w : opts.align === 'center' ? Math.floor((width - w) / 2) : 0;
-        this.draw(ctx, line, x, i * lineHeight, font, opts.color ?? 'menu');
+        this.draw(ctx, line.replaceAll(WAIT, dots), x, i * lineHeight, font, opts.color ?? 'menu');
       });
     };
+    if (animated) {
+      waiting.set(canvas, render);
+      if (!dotTimer) dotTimer = window.setInterval(tickDots, DOT_MS);
+    } else waiting.delete(canvas);
     if (this.ready) render();
     else this.onReady(render);
   }
@@ -417,10 +474,26 @@ class SettingsRow {
     auto.addEventListener('change', () => cinnamon.settings.set('openAtStart', auto.checked ? null : false));
     const autoLabel = el('label');
     autoLabel.append(auto, 'Open battle window at start');
+    const model = el('select', 'pkb-settings-model');
+    model.setAttribute('aria-label', 'Claude model');
+    for (const id of ['haiku', 'sonnet', 'opus', 'fable']) {
+      const option = el('option', '', id.charAt(0).toUpperCase() + id.slice(1));
+      option.value = id;
+      model.append(option);
+    }
+    model.addEventListener('change', () => cinnamon.settings.set('claudeModel', model.value === 'haiku' ? null : model.value));
+    const modelLabel = el('label');
+    modelLabel.append('Claude model', model);
+    const stats = el('input');
+    stats.type = 'checkbox';
+    stats.className = 'pkb-stats-toggle';
+    stats.addEventListener('change', () => cinnamon.settings.set('showClaudeStats', stats.checked ? true : null));
+    const statsLabel = el('label');
+    statsLabel.append(stats, 'Show Claude stats');
     const open = el('button', 'pkb-settings-open', 'Open battle');
     open.type = 'button';
     open.addEventListener('click', () => this.app.show());
-    wrap.append(label, autoLabel, modeLabel, open);
+    wrap.append(label, autoLabel, modeLabel, modelLabel, statsLabel, open);
     control.replaceChildren(wrap);
     row.setAttribute('data-pkb-row', '');
     row.setAttribute('role', 'group');
@@ -432,6 +505,10 @@ class SettingsRow {
   sync(row: HTMLElement): void {
     const toggle = row.querySelector<HTMLInputElement>('.pkb-sound-toggle');
     if (toggle) toggle.checked = !this.app.sfx.sound.windows.battle.muted;
+    const model = row.querySelector<HTMLSelectElement>('.pkb-settings-model');
+    if (model) model.value = ns.claudeModel?.() ?? 'haiku';
+    const stats = row.querySelector<HTMLInputElement>('.pkb-stats-toggle');
+    if (stats) stats.checked = cinnamon.settings.get('showClaudeStats') === true;
     const auto = row.querySelector<HTMLInputElement>('.pkb-auto-toggle');
     if (auto) auto.checked = cinnamon.settings.get('openAtStart') !== false;
     const mode = row.querySelector<HTMLSelectElement>('.pkb-settings-mode');
@@ -444,4 +521,4 @@ function cursorAt(textX: number, textY: number): HTMLElement {
   return place(imgEl(assets, 'curAction'), textX - CURSOR_COL, textY - 1, 8, 16);
 }
 
-Object.assign(ns, { assets, canvasEl, imgEl, frameBox, cursorAt, SettingsRow });
+Object.assign(ns, { WAIT, forceDots, assets, canvasEl, imgEl, frameBox, cursorAt, SettingsRow });

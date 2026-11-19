@@ -29,7 +29,7 @@ const ns = (window as any).__pkb;
 const { TEXT_MS, HOLD_MS, HP_STEP_MS, BAR, POKEMON, rt, debugLog, report, later, cancelLater, sleep, el,
    place, clamp, upper, moveText, monText, pixelArt, BALL, BALL_PAL, assets, canvasEl, imgEl, frameBox, parseLine, parseIdent, parseDetails, parseHp,
    hpPx, effectName, STAT_NAMES, WEATHER_START, WEATHER_UPKEEP, WEATHER_END, WEATHER_ABILITY, damageLine,
-   healLine, statusLine, cantLine, sideLine, effectLine, cursorAt, peSound } = ns;
+   healLine, statusLine, cantLine, sideLine, effectLine, cursorAt, peSound, WAIT } = ns;
 
 const STATUS_ROW: Record<string, number> = { psn: 0, tox: 0, par: 1, slp: 2, frz: 3, brn: 4 };
 const BAR_COLORS: Record<string, [string, string]> = { g: ['#5ad583', '#73ffac'], y: ['#cdac08', '#ffe639'], r: ['#ac414a', '#ff5a39'] };
@@ -485,11 +485,17 @@ class Battle {
         return;
       case 'win': {
         const won = args[0] === this.sides[this.mySide].trainer || args[0] === this.myName;
+        this.sawWin = true;
+        if (this.mode === 'cpu') this.app.musicOutcome = won ? 'victory' : 'silent';
+        this.app.music.sync(this.app, won ? 0 : 1000);
         if (!this.fast) this.app.sfx.play(won ? 'win' : 'lose');
         await this.say(won ? `${upper(this.myName)} defeated ${this.foeTrainer()}!` : `${upper(this.myName)} lost to ${this.foeTrainer()}!`, 1200);
         return;
       }
       case 'tie':
+        this.sawWin = true;
+        this.app.musicOutcome = 'silent';
+        this.app.music.sync(this.app, 1000);
         await this.say('The battle ended in a draw!', 1200);
         return;
       default:
@@ -546,11 +552,15 @@ class Battle {
     }
   }
 
+  balls = new Map<string, string>();
+  sawWin = false;
+
   private async sendOut(key: Key, mon: Mon): Promise<void> {
     const view = this.mons[key];
     this.setSprite(key, mon);
     view.img.style.transform = '';
     view.img.style.filter = '';
+    if (!this.fast && ns.sendOutEnabled?.() && (await ns.sendOutV2(this, key, mon))) return;
     if (this.fast) {
       view.ball.style.display = 'none';
       view.img.hidden = !view.img.getAttribute('src');
@@ -696,6 +706,9 @@ class Battle {
     if (row !== undefined && icons) ctx.drawImage(icons, 0, row * 8, 24, 8, me ? 16 : 8, me ? 24 : 16, 24, 8);
     const label = assets.image('hpbar');
     if (label && (me || row === undefined)) ctx.drawImage(label, 8, 0, 16, 8, barX - 16, 16, 16, 8);
+    // UpdateStatusIconInHealthbox: on the foe box the status icon takes the HP label's place and the bar keeps its frame end
+    const frameEnd = assets.image('hbFrameEnd');
+    if (frameEnd && !me && row !== undefined) ctx.drawImage(frameEnd, barX - 8, 16);
     const [dark, light] = BAR_COLORS[hpColor(px)];
     const rows: Array<[number, string, string]> = [[17, '#526a5a', '#526a5a'], [18, '#ffffff', '#ffffff'], [19, dark, '#4a415a'], [20, light, '#526a5a'], [21, '#ffffff', '#ffffff'], [22, '#526a5a', '#526a5a']];
     for (const [y, full, empty] of rows) {
@@ -860,7 +873,7 @@ class Battle {
     this.closeMenus();
     if (req.wait) {
       this.menuState = 'wait';
-      this.setText(this.mode === 'lan' ? 'Communicating...\nPlease wait.' : '');
+      this.setText(this.waitText());
     } else if (req.forceSwitch?.[0]) {
       this.openParty(true);
     } else if (req.active?.[0]) {
@@ -1039,10 +1052,34 @@ class Battle {
   forfeit(): void {
     this.closeMenus();
     this.app.link.send({ type: 'forfeit', battleId: this.id });
+    this.app.musicOutcome = 'silent';
+    this.app.music.sync(this.app, 1000);
     this.setText(`${upper(this.myName)} forfeited the battle!`);
   }
 
   private lastChoice: Record<string, unknown> | null = null;
+  private foeThinking = false;
+  private fallbackNote = false;
+
+  private waitText(): string {
+    if (this.fallbackNote) {
+      this.fallbackNote = false;
+      return String(ns.CLAUDE_FALLBACK ?? 'The CPU takes over.');
+    }
+    if (this.foeThinking) return `${this.foeTrainer()} is thinking${WAIT}`;
+    return this.mode === 'lan' ? `Communicating${WAIT}\nPlease wait.` : '';
+  }
+
+  thinking(on: boolean): void {
+    this.foeThinking = on;
+    if (this.menuState === 'wait' && !this.running) this.setText(this.waitText());
+  }
+
+  fallback(): void {
+    this.fallbackNote = true;
+    this.foeThinking = false;
+    if (this.menuState === 'wait' && !this.running) this.setText(this.waitText());
+  }
 
   resendChoice(): boolean {
     if (!this.lastChoice || this.dead) return false;
@@ -1059,7 +1096,7 @@ class Battle {
     this.clocks.mine = 0;
     this.closeMenus();
     this.menuState = 'wait';
-    this.setText(this.mode === 'lan' ? 'Communicating...\nPlease wait.' : '');
+    this.setText(this.waitText());
     this.app.updateBadge();
   }
 

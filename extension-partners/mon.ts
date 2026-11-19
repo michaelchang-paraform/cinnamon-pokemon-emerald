@@ -65,18 +65,18 @@ const shinyOverride = new Set<string>();
 function mon(key: string): Mon | null {
   const dex = M.assets.dex;
   if (!dex) return null;
-  const entry = M.store.get(key);
   const species = M.store.species(key);
   const base = dex.st[species];
   if (!base) return null;
-  const level = M.levelFor(entry[1]);
+  const exp = M.store.exp(key);
+  const level = M.levelForExp(exp);
   const draw = M.rng(M.hash(`${key}#mon`));
   const u32 = () => Math.floor(draw() * 4294967296) >>> 0;
   const personality = u32();
   const otId = u32();
   const ivs = Array.from({ length: 6 }, () => Math.floor(draw() * 32));
-  const shinyValue = (otId >>> 16) ^ (otId & 0xffff) ^ (personality >>> 16) ^ (personality & 0xffff);
-  const shiny = shinyValue < 8 || shinyOverride.has(key);
+  // only the partner's one persisted crypto roll at the Shiny odds setting (or the QA override)
+  const shiny = M.store.shinyState(key) > 0 || shinyOverride.has(key);
   const nature = personality % 25;
   const threshold = base[10];
   const gender = threshold === 255 ? null : threshold === 0 ? 'M' : threshold === 254 ? 'F' : (personality & 0xff) < threshold ? 'F' : 'M';
@@ -96,7 +96,8 @@ function mon(key: string): Mon | null {
     learned.push(move);
   }
   const name = M.assets.name(species);
-  const expThis = expAt(base[11], level);
+  // every partner levels on Medium Fast (level^3), whatever its species' growth rate in the game
+  const expThis = expAt(0, level);
   return {
     key,
     species,
@@ -111,16 +112,22 @@ function mon(key: string): Mon | null {
     ability,
     ivs,
     stats,
-    exp: expThis,
+    exp,
     expThis,
-    expNext: level >= M.MAX_LEVEL ? expThis : expAt(base[11], level + 1),
+    expNext: level >= M.MAX_LEVEL ? expThis : expAt(0, level + 1),
     moves: learned.slice(-4),
     types: base[6] === base[7] ? [base[6]] : [base[6], base[7]],
   };
+}
+
+// the game's 64-pixel EXP bar, shared by the summary and the hover card so both show the same fill
+function expPixels(m: Mon): number {
+  if (m.expNext <= m.expThis) return 0;
+  return Math.min(64, Math.max(0, Math.floor((64 * (m.exp - m.expThis)) / (m.expNext - m.expThis))));
 }
 
 function trainerName(): string {
   return M.trainerSetting().name;
 }
 
-Object.assign(M, { mon, expAt, natureMod, shinyOverride, trainerName });
+Object.assign(M, { mon, expAt, expPixels, natureMod, shinyOverride, trainerName });

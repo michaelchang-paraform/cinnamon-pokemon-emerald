@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gridPng, dataUrl } from '../lib/png.mjs';
 import { readIndexedPng } from '../partners/png-read.mjs';
+import { existsSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { ART, MATCH, ASSETS, STATUS } from './glyphs.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -18,7 +20,11 @@ function assetRows([file, x0, y0, w, h]) {
   return Array.from({ length: h }, (_, y) => Array.from({ length: w }, (_, x) => (png.index[(y0 + y) * png.width + x0 + x] === background ? '.' : '#')).join(''));
 }
 
-const arts = { ...ART };
+// optional glyphs.local.mjs (gitignored): its ART adds arts, its MATCH is merged into each codepoint's entry
+const LOCAL_FILE = join(HERE, 'glyphs.local.mjs');
+const LOCAL = existsSync(LOCAL_FILE) ? await import(pathToFileURL(LOCAL_FILE).href) : {};
+const arts = { ...ART, ...(LOCAL.ART || {}) };
+const match = Object.fromEntries(Object.entries(MATCH).map(([codepoint, spec]) => [codepoint, { ...spec, ...((LOCAL.MATCH || {})[codepoint] || {}) }]));
 for (const [name, spec] of Object.entries(ASSETS)) arts[name] = assetRows(spec);
 
 function maskPng(rows) {
@@ -28,7 +34,7 @@ function maskPng(rows) {
 
 const used = new Set();
 const map = {};
-for (const [codepoint, spec] of Object.entries(MATCH)) {
+for (const [codepoint, spec] of Object.entries(match)) {
   const entry = { a: spec.asset || spec.art };
   if (spec.small) entry.s = spec.small;
   if (spec.motif) entry.m = spec.motif;

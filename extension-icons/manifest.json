@@ -2,7 +2,7 @@
   "id": "pokemon-icons",
   "name": "Pokemon Icons",
   "description": "Redraws the Claude app's icons as 1-bit pixel art on the Pokemon Emerald font grid",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "page": [
     "page.ts"
   ],

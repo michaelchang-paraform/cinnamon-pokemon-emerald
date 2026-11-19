@@ -83,6 +83,7 @@ const images = (name) => [
   `--pe-frame-menu:${url(framePng(FRAMES[name].menu))}`,
   `--pe-frame-focus:${url(framePng(FRAMES[name].focus))}`,
   `--pe-frame-sel:${url(framePng(FRAMES[name].sel))}`,
+  `--pe-menu-fill:${FRAMES[name].menu.fill}`,
   `--pe-tile:${url(checker(...TILES[name]))}`,
 ].join(';');
 

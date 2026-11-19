@@ -33,6 +33,7 @@ class SmartAI extends RandomPlayerAI {
 
   receiveError(error) {
     log('[ai] choice error', error.message);
+    if (error.message.startsWith('[Invalid choice]')) this.choose('default');
   }
 
   chooseMove(active, moves) {

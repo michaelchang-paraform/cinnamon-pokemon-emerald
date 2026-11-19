@@ -131,7 +131,7 @@ const fullPal = (n) => Array.from({ length: n * 16 }, () => [255, 0, 255]);
   };
   put('curAction', cur(1, 2));
 }
-for (const [name, file] of [['hbPlayer', 'healthbox_singles_player'], ['hbFoe', 'healthbox_singles_opponent'], ['hpbar', 'hpbar'], ['expbar', 'expbar'], ['shadow', 'enemy_mon_shadow']]) {
+for (const [name, file] of [['hbPlayer', 'healthbox_singles_player'], ['hbFoe', 'healthbox_singles_opponent'], ['hpbar', 'hpbar'], ['hbFrameEnd', 'misc_frameend'], ['expbar', 'expbar'], ['shadow', 'enemy_mon_shadow']]) {
   const img = decodePng(join(G, `battle_interface/${file}.png`));
   put(name, encodeIndexed(img.width, img.height, img.pixels, img.palette));
 }

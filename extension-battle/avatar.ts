@@ -4,7 +4,7 @@ type TrainerGroup = [string, Array<[number[], number, number]>];
 type TrainerSheet = { id: string; name: string; pal: string[]; frames: string[]; groups: TrainerGroup[] };
 
 const ns = (window as any).__pkb;
-const { el, decodeBase64 } = ns;
+const { el, decodeBase64, listen } = ns;
 const DEFAULT_LOOK: TrainerLook = { cls: 'brendan', name: 'BRENDAN', palette: [] };
 let sheets: TrainerSheet[] | null = null;
 
@@ -105,5 +105,64 @@ function wireLook(look: TrainerLook): { cls: number; name: string; palette: Arra
   return { cls: Math.max(0, trainerSheets().findIndex((t) => t.id === look.cls)), name: look.name, palette: look.palette.slice(0, 8) };
 }
 
-cinnamon.onDispose(() => (sheets = null));
-Object.assign(ns, { DEFAULT_LOOK, playerLook, cleanLook, trainerCanvas, wireLook });
+// partners publishes the recoloured player: --pkp-trainer (stand) and --pkp-trainer-walk (sAnim_GoSouth strip)
+const WALK_STEP_FRAMES = 8;
+const WALK_REST_FRAMES = 120;
+const walkers = new Set<HTMLElement>();
+let walkStyle: HTMLStyleElement | null = null;
+
+function rootUrl(prop: string): string {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(prop).trim();
+  return /^url\(["']?((?:data|blob):[^"')]+)["']?\)$/.exec(raw)?.[1] ?? '';
+}
+
+function walkKeyframes(frames: number): string {
+  const total = frames * WALK_STEP_FRAMES + WALK_REST_FRAMES;
+  const at = (f: number) => `${((f / total) * 100).toFixed(3)}%`;
+  const pos = (i: number) => `${((i / Math.max(1, frames - 1)) * 100).toFixed(3)}%`;
+  const steps = Array.from({ length: frames }, (_, i) => `${at(i * WALK_STEP_FRAMES)}{background-position-x:${pos(i)}}`);
+  return `@keyframes pkb-walk{${steps.join('')}${at(frames * WALK_STEP_FRAMES)},100%{background-position-x:0%}}`;
+}
+
+function playerSprite(look: TrainerLook): HTMLElement | null {
+  const stand = rootUrl('--pkp-trainer');
+  const strip = rootUrl('--pkp-trainer-walk');
+  const frames = Math.round(Number(getComputedStyle(document.documentElement).getPropertyValue('--pkp-trainer-walk-frames')) || 0);
+  if (!stand && !strip) return trainerCanvas(look);
+  const walker = el('span', 'pkb-trainer pkb-walker');
+  const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || !strip || frames < 2;
+  if (still) {
+    walker.style.backgroundImage = `url("${stand || strip}")`;
+    walker.style.backgroundSize = stand ? '100% 100%' : `${Math.max(1, frames) * 100}% 100%`;
+    return walker;
+  }
+  if (!walkStyle) {
+    walkStyle = el('style') as HTMLStyleElement;
+    document.head.append(walkStyle);
+  }
+  const css = walkKeyframes(frames);
+  if (walkStyle.textContent !== css) walkStyle.textContent = css;
+  const ms = ((frames * WALK_STEP_FRAMES + WALK_REST_FRAMES) * 1000) / 59.7275;
+  Object.assign(walker.style, {
+    backgroundImage: `url("${strip}")`,
+    backgroundSize: `${frames * 100}% 100%`,
+    animationDuration: `${Math.round(ms)}ms`,
+    animationDelay: `-${Math.round(performance.now() % ms)}ms`,
+  });
+  walker.classList.add('is-walking');
+  walker.classList.toggle('is-paused', document.hidden);
+  walkers.add(walker);
+  return walker;
+}
+
+listen(document, 'visibilitychange', () => {
+  for (const walker of walkers) {
+    if (!walker.isConnected) walkers.delete(walker);
+    else walker.classList.toggle('is-paused', document.hidden);
+  }
+});
+cinnamon.onDispose(() => {
+  sheets = null;
+  walkStyle?.remove();
+});
+Object.assign(ns, { DEFAULT_LOOK, playerLook, cleanLook, trainerCanvas, playerSprite, wireLook });

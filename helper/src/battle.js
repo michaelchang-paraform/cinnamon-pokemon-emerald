@@ -6,6 +6,30 @@ const { makeId, isChoice, log } = require('./util');
 
 const SIDES = ['p1', 'p2'];
 
+/** Ball weights out of 100: Poke, Great and Ultra common, Master 1%. */
+const BALL_WEIGHTS = {
+  poke: 30, great: 22, ultra: 16,
+  net: 4, dive: 4, nest: 4, repeat: 4, timer: 4, luxury: 4, premier: 4,
+  safari: 3, master: 1,
+};
+const BALLS = Object.keys(BALL_WEIGHTS);
+const BALL_TOTAL = Object.values(BALL_WEIGHTS).reduce((a, b) => a + b, 0);
+
+function pickBall(random = Math.random) {
+  let roll = random() * BALL_TOTAL;
+  for (const ball of BALLS) {
+    roll -= BALL_WEIGHTS[ball];
+    if (roll < 0) return ball;
+  }
+  return 'poke';
+}
+
+/** 'p1a: Lanturn' and 'p1: Lanturn' both become 'p1: Lanturn'. */
+function teamIdent(ident) {
+  const match = /^(p[12])[a-z]?: (.+)$/.exec(ident || '');
+  return match ? `${match[1]}: ${match[2]}` : null;
+}
+
 /**
  * One Showdown battle run in-process. Each side has a seat:
  *   { kind: 'human', name, send(msg) }   gets protocol envelopes (battle / request / choice_error / timer)
@@ -74,9 +98,10 @@ class BattleSession extends EventEmitter {
       visible.push(line);
     }
     const trimmed = visible.filter((line) => line !== '');
+    const balls = this.ballsForLines(trimmed);
     if (trimmed.length) {
       this.state[side].log.push(...trimmed);
-      if (seat.kind === 'human') seat.send({ type: 'battle', battleId: this.id, lines: trimmed });
+      if (seat.kind === 'human') seat.send({ type: 'battle', battleId: this.id, lines: trimmed, ...(balls ? { balls } : {}) });
     }
     for (const line of trimmed) {
       if (line.startsWith('|win|')) {
@@ -97,6 +122,9 @@ class BattleSession extends EventEmitter {
       return;
     }
     const st = this.state[side];
+    if (request.side && Array.isArray(request.side.pokemon)) {
+      for (const p of request.side.pokemon) p.ball = this.ballFor(p.ident);
+    }
     st.request = request;
     st.seq += 1;
     st.awaiting = !request.wait;
@@ -212,9 +240,36 @@ class BattleSession extends EventEmitter {
     return SIDES.filter((s) => this.state[s].awaiting && this.state[s].deadline).map((s) => ({ side: s, secondsLeft: Math.max(0, Math.ceil((this.state[s].deadline - Date.now()) / 1000)) }));
   }
 
+  /** One ball per Pokemon, picked once when the teams exist. */
+  ballFor(ident) {
+    const key = teamIdent(ident);
+    if (!key) return 'poke';
+    if (!this.balls) {
+      this.balls = new Map();
+      const sides = (this.stream.battle && this.stream.battle.sides) || [];
+      for (const s of sides) for (const p of s.pokemon) this.balls.set(`${s.id}: ${p.name}`, pickBall());
+    }
+    if (!this.balls.has(key)) this.balls.set(key, pickBall());
+    return this.balls.get(key);
+  }
+
+  /** { ident: ball } for the switch-ins in these lines, or null. */
+  ballsForLines(lines) {
+    let out = null;
+    for (const line of lines) {
+      const parts = line.split('|');
+      if (!['switch', 'drag', 'replace'].includes(parts[1])) continue;
+      const key = teamIdent(parts[2]);
+      if (!key) continue;
+      out = out || {};
+      out[key] = this.ballFor(key);
+    }
+    return out;
+  }
+
   snapshot(side) {
     const st = this.state[side];
-    return { log: st.log.slice(), request: st.awaiting ? st.request : null, rqid: st.seq, timers: this.timers() };
+    return { log: st.log.slice(), balls: this.ballsForLines(st.log), request: st.awaiting ? st.request : null, rqid: st.seq, timers: this.timers() };
   }
 }
 
@@ -222,4 +277,4 @@ function other(side) {
   return side === 'p1' ? 'p2' : 'p1';
 }
 
-module.exports = { BattleSession, other };
+module.exports = { BattleSession, other, pickBall, BALLS, BALL_WEIGHTS, teamIdent };

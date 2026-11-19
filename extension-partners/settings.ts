@@ -11,6 +11,7 @@ const WALK = [0, 1, 0, 2];
 class TrainerArt {
   private style = S.el('style');
   private url = '';
+  private walkUrl = '';
   private sig = '';
 
   constructor() {
@@ -26,13 +27,28 @@ class TrainerArt {
     const trainer = S.assets.data?.t.find((t: any) => t.id === setting.base);
     if (!trainer) return;
     this.sig = sig;
+    // read-only for the battle lobby: the trainer class, name and palette, announced on load and on every change
+    (window as any).__pePlayer = { cls: setting.base, name: setting.name, palette: setting.colors.slice() };
+    window.dispatchEvent(new Event('pe-player-change'));
     const canvas = S.el('canvas') as HTMLCanvasElement;
     S.paintTrainer(canvas, trainer, 0, setting.colors);
-    canvas.toBlob((blob: Blob | null) => {
-      if (!blob || S.rt.disposed || sig !== this.sig) return;
+    // the walk strip: four 16x32 frames in sAnim_GoSouth order (stand, step 3, stand, step 4), recoloured alike
+    const strip = S.el('canvas') as HTMLCanvasElement;
+    strip.width = 16 * WALK.length;
+    strip.height = 32;
+    const one = S.el('canvas') as HTMLCanvasElement;
+    WALK.forEach((frame, i) => {
+      S.paintTrainer(one, trainer, frame, setting.colors);
+      strip.getContext('2d')!.drawImage(one, i * 16, 0);
+    });
+    const blobOf = (c: HTMLCanvasElement) => new Promise<Blob | null>((done) => c.toBlob(done));
+    void Promise.all([blobOf(canvas), blobOf(strip)]).then(([still, walk]) => {
+      if (!still || !walk || S.rt.disposed || sig !== this.sig) return;
       if (this.url) URL.revokeObjectURL(this.url);
-      this.url = URL.createObjectURL(blob);
-      this.style.textContent = `:root{--pkp-trainer:url("${this.url}")}`;
+      if (this.walkUrl) URL.revokeObjectURL(this.walkUrl);
+      this.url = URL.createObjectURL(still);
+      this.walkUrl = URL.createObjectURL(walk);
+      this.style.textContent = `:root{--pkp-trainer:url("${this.url}");--pkp-trainer-walk:url("${this.walkUrl}");--pkp-trainer-walk-frames:${WALK.length}}`;
     });
     document.querySelectorAll<HTMLElement>('.pkp-tr').forEach((node) => (node.dataset.name = setting.name));
   }
@@ -40,6 +56,8 @@ class TrainerArt {
   dispose(): void {
     this.style.remove();
     if (this.url) URL.revokeObjectURL(this.url);
+    if (this.walkUrl) URL.revokeObjectURL(this.walkUrl);
+    delete (window as any).__pePlayer;
   }
 }
 
@@ -141,6 +159,41 @@ class SettingsRow {
       else this.build(panel, mini);
     }));
     this.paintMini(mini);
+    panel.after(this.choiceRow(anchor, 'Shiny odds', 'Chance that a new partner is shiny. Each partner rolls once.', 'shinyOdds',
+      S.SHINY_ODDS.map((n: number) => [String(n), n === 8192 ? '1/8192 (game)' : `1/${n}`]), '8192'));
+    const odds = panel.nextElementSibling as HTMLElement;
+    const cry = this.choiceRow(anchor, "Play the partner's cry when Claude finishes", 'Only for the chat on screen, while the app is focused.', 'replyCry',
+      [['1', 'On'], ['0', 'Off']], '1');
+    odds.after(cry);
+    cry.after(this.choiceRow(anchor, 'Play level-up sounds while Claude works', 'The EXP bar and level-up fanfare when a partner levels up.', 'workSounds',
+      [['1', 'On'], ['0', 'Off']], '1'));
+  }
+
+  // one more settings row in the app's own row style, with a native select
+  private choiceRow(anchor: HTMLElement, name: string, text: string, setting: string, options: Array<[string, string]>, fallback: string): HTMLElement {
+    const row = anchor.cloneNode(true) as HTMLElement;
+    for (const node of [row, ...row.querySelectorAll('*')]) {
+      for (const attr of [...node.attributes]) if (/^(id|for|name|aria-|data-cm-|data-cinnamon-|data-pkb-)/.test(attr.name)) node.removeAttribute(attr.name);
+    }
+    const [title, description, ...rest] = SettingsRow.leaves(row);
+    rest.forEach((leaf) => leaf.remove());
+    if (title) title.textContent = name;
+    if (description) description.textContent = text;
+    let control = row.querySelector<HTMLElement>('[data-settings-control]');
+    if (!control) {
+      control = S.el('div');
+      control.setAttribute('data-settings-control', '');
+      row.append(control);
+    }
+    const select = S.el('select', 'pkp-set-select') as HTMLSelectElement;
+    select.setAttribute('aria-label', name);
+    for (const [value, label] of options) select.append(new Option(label, value));
+    const current = String(cinnamon.settings.get(setting) ?? fallback);
+    select.value = options.some(([value]) => value === current) ? current : fallback;
+    select.addEventListener('change', S.guard(() => cinnamon.settings.set(setting, Number(select.value))));
+    control.replaceChildren(select);
+    row.setAttribute('data-pkp-settings', '');
+    return row;
   }
 
   // the same trainer panel, lifted over the app when the user's trainer sprite is clicked
@@ -172,11 +225,28 @@ class SettingsRow {
       event.stopPropagation();
       this.closeModal();
     }));
-    (panel.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ?? done).focus();
+    // side by side only while three grid columns fit next to the preview column; else the stacked strip
+    const fit = S.guard(() => {
+      box.classList.remove('is-stacked');
+      const grid = panel.querySelector<HTMLElement>('.pkp-set-bases');
+      const cell = grid?.firstElementChild?.getBoundingClientRect().width ?? 0;
+      const gap = grid ? parseFloat(getComputedStyle(grid).columnGap) || 0 : 0;
+      if (grid && cell && grid.getBoundingClientRect().width < 3 * cell + 2 * gap) box.classList.add('is-stacked');
+    });
+    fit();
+    this.fitModal = fit;
+    window.addEventListener('resize', fit);
+    const current = panel.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
+    (current ?? done).focus({ preventScroll: true });
+    current?.scrollIntoView({ block: 'center' });
   }
+
+  private fitModal: (() => void) | null = null;
 
   closeModal(): void {
     if (!this.modal) return;
+    if (this.fitModal) window.removeEventListener('resize', this.fitModal);
+    this.fitModal = null;
     this.stopWalk();
     this.modal.remove();
     this.modal = null;
@@ -213,8 +283,27 @@ class SettingsRow {
     nameInput.maxLength = NAME_MAX;
     nameInput.spellcheck = false;
     nameLabel.append(S.el('span', '', 'Name'), nameInput);
-    form.append(S.el('div', 'pkp-set-heading', 'Trainer'), bases, colorBox, nameLabel);
-    panel.append(preview, form);
+    const side = S.el('div', 'pkp-set-side');
+    side.append(preview, colorBox, nameLabel);
+    form.classList.add('pkp-set-scroll');
+    form.append(S.el('div', 'pkp-set-heading', 'Trainer'), bases);
+    panel.append(side, form);
+    // arrow keys walk the grid by its laid-out rows and columns, picking and revealing each trainer
+    bases.addEventListener('keydown', S.guard((event: KeyboardEvent) => {
+      const keys: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+      const move = keys[event.key];
+      if (!move) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const buttons = [...bases.querySelectorAll<HTMLElement>('[role="radio"]')];
+      const current = Math.max(0, buttons.findIndex((b) => b.getAttribute('aria-checked') === 'true'));
+      const cols = Math.max(1, buttons.filter((b) => b.offsetTop === buttons[0].offsetTop).length);
+      const next = move[0] ? current + move[0] : current + move[1] * cols;
+      const target = buttons[Math.min(buttons.length - 1, Math.max(0, next))];
+      target.click();
+      target.focus({ preventScroll: true });
+      target.scrollIntoView({ block: 'nearest' });
+    }));
 
     const trainerOf = () => data.t.find((t: any) => t.id === draft.base) ?? data.t[0];
     let frame = 0;

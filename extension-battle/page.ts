@@ -13,8 +13,8 @@ type Action = 'up' | 'down' | 'left' | 'right' | 'ok' | 'back';
 
 const ns = (window as any).__pkb;
 const { Battle, START_COMMAND, NAME_MAX, POKEMON, LAUNCH_SELECTOR, NAV_SELECTOR, rt, report, timers, cleanups, listen, el, place,
-   clamp, upper, pixelArt, BALL, BALL_PAL, CLOSE_ART, Sfx, Link, savedName, cleanName, Menu,
-   WEATHER_LABEL, assets, canvasEl, frameBox, SettingsRow, CURSOR_COL, writeBattleSound, peSound, playerLook, cleanLook, trainerCanvas, DEFAULT_LOOK, wireLook } = ns;
+   clamp, upper, pixelArt, CLOSE_ART, Sfx, Link, savedName, cleanName, Menu,
+   WEATHER_LABEL, assets, canvasEl, frameBox, SettingsRow, WAIT, CURSOR_COL, writeBattleSound, peSound, playerLook, cleanLook, trainerCanvas, playerSprite, DEFAULT_LOOK, wireLook, parseClaude, claudeModel, claudeStats, opponentMenu, CLAUDE_LOOK, parsePeerAddress, peerHint, resultReason } = ns;
 const SPEAKER = ['...x....', '..xx..x.', 'xxxx.x.x', 'xxxx.x.x', 'xxxx.x.x', '..xx..x.', '...x....'];
 const SPEAKER_OFF = ['...x....', '..xx....', 'xxxx.x.x', 'xxxx..x.', 'xxxx.x.x', '..xx....', '...x....'];
 type FloatState = { x: number; y: number; w: number; h: number; dock: 'left' | 'right' | null; min: boolean };
@@ -24,7 +24,7 @@ type Peer = { id: string; name: string; status: string; address: string; source:
 type Incoming = { challengeId: string; from: { id: string; name: string }; expiresAt: number };
 type Outgoing = { challengeId: string; peer: { id: string; name: string } };
 type Prompt = { kind: 'incoming'; challenge: Incoming } | { kind: 'outgoing' } | { kind: 'input'; field: 'name' | 'ip' } | null;
-type ResultInfo = { result: string; reason: string; turns: number; mode: 'cpu' | 'lan'; opponent: string; peerId: string | null; difficulty: string };
+type ResultInfo = { result: string; reason: string; turns: number; mode: 'cpu' | 'lan'; opponent: string; peerId: string | null; difficulty: string; kind?: string; model?: string; stats?: string; look?: unknown };
 
 class App {
   open = false;
@@ -47,7 +47,13 @@ class App {
   lobbyFocus: 'menu' | 'peers' = 'menu';
   lobbyIndex = 0;
   peerIndex = 0;
-  lastOpponent: { mode: 'cpu' | 'lan'; peerId: string | null; name: string; difficulty: string } | null = null;
+  lastOpponent: { mode: 'cpu' | 'lan'; peerId: string | null; name: string; difficulty: string; kind: string; model: string; look: unknown } | null = null;
+  claude = parseClaude(null);
+  panel: 'foe' | 'options' | 'music' | null = null;
+  panelIndex = 0;
+  panelHints: string[] = [];
+  readonly music = new ns.BattleMusic();
+  musicOutcome: 'battle' | 'victory' | 'silent' = 'silent';
   welcomed = false;
 
   readonly root = el('div', 'pkb-overlay');
@@ -69,8 +75,7 @@ class App {
   private readonly closeBtn = el('button', 'pkb-close');
   readonly launcher = el('button', 'pkb-launch');
   private readonly badge = el('span', 'pkb-launch-badge');
-  private launcherArt: SVGSVGElement | null = null;
-  private launcherScale = 0;
+  launcherArt!: { sync(): void; box: { w: number; h: number } };
   private prevFocus: Element | null = null;
   private menus: Menu[] = [];
   private input: HTMLInputElement | null = null;
@@ -105,6 +110,7 @@ class App {
     this.launcher.append(this.badge);
     this.launcher.addEventListener('click', () => this.toggle());
     document.body.append(this.root, this.launcher);
+    this.launcherArt = new ns.LauncherArt(this.launcher);
   }
 
   start(): void {
@@ -140,49 +146,7 @@ class App {
   }
 
   placeLauncher(): void {
-    const dpr = window.devicePixelRatio || 1;
-    const scale = Math.max(1, Math.floor((22 * dpr) / 12));
-    if (scale !== this.launcherScale || !this.launcherArt) {
-      this.launcherScale = scale;
-      this.launcherArt?.remove();
-      this.launcherArt = pixelArt(BALL, BALL_PAL);
-      this.launcher.style.setProperty('--u', `${scale / dpr}px`);
-      this.launcher.prepend(this.launcherArt);
-    }
-    const size = 28;
-    const topRects = (selector: string) =>
-      [...document.querySelectorAll<HTMLElement>(selector)].map((button) => button.getBoundingClientRect()).filter((rect) => rect.width >= 10 && rect.top >= 0 && rect.top <= 60);
-    const candidates: Array<[number, number]> = [];
-    const nav = topRects(NAV_SELECTOR)
-      .filter((rect) => rect.top < 30)
-      .sort((a, b) => a.left - b.left);
-    let navEnd = nav[0];
-    for (const rect of nav.slice(1)) {
-      if (Math.abs(rect.top - navEnd.top) > 3 || rect.left - navEnd.right > 12) break;
-      navEnd = rect;
-    }
-    if (navEnd) candidates.push([navEnd.right + 4, navEnd.top + (navEnd.height - size) / 2]);
-    const panes = topRects(LAUNCH_SELECTOR);
-    if (panes.length) {
-      const top = panes[0].top + (panes[0].height - size) / 2;
-      candidates.push([Math.min(...panes.map((rect) => rect.left)) - size - 4, top], [Math.max(...panes.map((rect) => rect.right)) + 4, top]);
-    }
-    const [x, y] = candidates.find(([cx, cy]) => this.slotFree(cx, cy, size)) ?? [innerWidth - size - 10, innerHeight - size - 10];
-    const snap = (v: number) => Math.round(v * dpr) / dpr;
-    const transform = `translate(${snap(x)}px, ${snap(y)}px)`;
-    if (this.launcher.style.transform !== transform) this.launcher.style.transform = transform;
-  }
-
-  private slotFree(x: number, y: number, size: number): boolean {
-    if (x < 0 || x + size > innerWidth) return false;
-    for (const px of [x + 2, x + size / 2, x + size - 2]) {
-      for (const hit of document.elementsFromPoint(px, y + size / 2)) {
-        if (hit === this.launcher || this.launcher.contains(hit)) continue;
-        if (hit.closest('button, a[href], [role="button"], [role="tab"], input, textarea')) return false;
-        break;
-      }
-    }
-    return true;
+    ns.placeLauncher(this);
   }
 
   updateBadge(): void {
@@ -200,12 +164,14 @@ class App {
     this.open = true;
     markClosed(false);
     this.prevFocus = quiet ? null : document.activeElement;
+    this.music.prepare();
     this.root.hidden = false;
     this.assets.load(this.root);
     this.layout();
     if (!quiet) this.sfx.unlock();
     if (this.link.conn === 'offline') this.link.retryNow();
     this.render();
+    this.music.sync(this);
     if (!quiet) this.focusTarget().focus({ preventScroll: true });
     this.updateBadge();
   }
@@ -229,7 +195,11 @@ class App {
     minimize.type = 'button';
     minimize.setAttribute('aria-label', 'Minimize battle window');
     minimize.append(pixelArt(['.....', '.....', '.....', 'xxxxx', 'xxxxx'], { x: 'currentColor' }));
-    minimize.addEventListener('click', () => this.setFloat({ min: !this.floatState().min }));
+    minimize.addEventListener('click', () => {
+      const min = !this.floatState().min;
+      this.setFloat({ min });
+      this.music.sync(this, 300);
+    });
     const close = el('button', 'pkb-tbtn');
     close.type = 'button';
     close.setAttribute('aria-label', 'Close battle window');
@@ -237,13 +207,18 @@ class App {
     close.addEventListener('click', () => this.close());
     this.titleLabel.append(assets.text(`${POKEMON} BATTLE`, { color: 'white' }));
     this.muteBtn.type = 'button';
+    // a press on the waiting speaker is the gesture that starts the music, not a mute
+    let startsMusic = false;
+    this.muteBtn.addEventListener('pointerdown', () => (startsMusic = this.muteBtn.classList.contains('is-waiting')));
     this.muteBtn.addEventListener('click', () => {
+      if (startsMusic) return void (startsMusic = false);
       const muted = !this.sfx.sound.windows.battle.muted;
       writeBattleSound({ muted });
       if (!muted) peSound('SE_SELECT');
     });
     this.sfx.onChange = () => {
       this.syncMute();
+      this.music.sync(this);
       const row = document.querySelector<HTMLElement>('[data-pkb-row]');
       if (row) settingsRow.sync(row);
     };
@@ -260,6 +235,9 @@ class App {
     this.muteBtn.setAttribute('aria-label', muted ? 'Unmute battle sound' : 'Mute battle sound');
     this.muteBtn.setAttribute('aria-pressed', String(muted));
     this.muteBtn.replaceChildren(pixelArt(muted ? SPEAKER_OFF : SPEAKER, { x: 'currentColor' }));
+    const waiting = !muted && this.music.waiting();
+    this.muteBtn.classList.toggle('is-waiting', waiting);
+    if (waiting) this.muteBtn.setAttribute('aria-label', 'Battle sound waits for a click to start');
   }
 
   floatState(): FloatState {
@@ -371,6 +349,7 @@ class App {
     if (this.prompt?.kind === 'input') this.prompt = null;
     this.root.hidden = true;
     markClosed(true);
+    this.music.sync(this);
     this.reserve(null, 0);
     this.restoreFocus();
     this.updateBadge();
@@ -388,7 +367,7 @@ class App {
     if (!this.open) return;
     const m = this.metrics();
     const { dpr, snap, bu, bw, titleH } = m;
-    const barH = Math.ceil(16 * bu * 1.25);
+    const barH = 21 * bu;
     const floating = this.floating;
     const st = this.floatState();
     this.root.classList.toggle('is-floating', floating);
@@ -416,7 +395,7 @@ class App {
       this.root.style.setProperty('--u', `${u}px`);
       Object.assign(this.frame.style, { left: `${left}px`, top: `${top}px`, width: '', height: '' });
       Object.assign(this.screenEl.style, { left: '', top: '' });
-      Object.assign(this.bar.style, { left: `${left}px`, top: `${top + 166 * u + 10}px`, width: `${246 * u}px`, height: `${barH}px` });
+      Object.assign(this.bar.style, { left: `${left}px`, top: `${snap(top + 166 * u + 10)}px`, width: `${246 * u}px`, height: `${barH}px` });
       return;
     }
     let w = clamp(st.w, m.minW, m.maxW);
@@ -470,6 +449,7 @@ class App {
         this.welcomed = true;
         this.trainer = { id: String(msg.trainer?.id ?? ''), name: String(msg.trainer?.name ?? '') };
         this.trainerLooks = msg.trainer && 'cls' in msg.trainer;
+        this.claude = parseClaude(msg);
         this.status = String(msg.status ?? 'idle');
         this.looking = !!msg.looking;
         this.lan = { enabled: !!msg.lan?.enabled, discovery: String(msg.lan?.discovery ?? 'off') };
@@ -480,6 +460,7 @@ class App {
         if (this.status !== 'battling' && this.battle && !this.battle.ended) {
           this.battle.dispose();
           this.battle = null;
+          this.musicOutcome = 'silent';
         }
         if (this.screen === 'offline' || (this.screen === 'battle' && !this.battle)) this.setScreen('lobby');
         break;
@@ -499,7 +480,7 @@ class App {
         this.trainer = { id: String(msg.trainer?.id ?? this.trainer.id), name: String(msg.trainer?.name ?? this.trainer.name) };
         break;
       case 'peer_added':
-        this.setNotice(`Added ${String(msg.address)}.\nWaiting for it to answer...`);
+        this.setNotice(`Added ${String(msg.address)}.\nWaiting for it to answer${WAIT}`);
         break;
       case 'challenge_sent':
         this.outgoing = { challengeId: String(msg.challengeId), peer: { id: String(msg.peer?.id ?? ''), name: String(msg.peer?.name ?? 'Trainer') } };
@@ -518,6 +499,8 @@ class App {
         this.battleStart(msg);
         break;
       case 'battle':
+        if (this.battle?.id === msg.battleId && msg.balls && typeof msg.balls === 'object')
+          for (const [ident, ball] of Object.entries(msg.balls)) this.battle.balls.set(ident, String(ball));
         if (this.battle?.id === msg.battleId && Array.isArray(msg.lines)) this.battle.push(msg.lines);
         break;
       case 'request':
@@ -532,6 +515,12 @@ class App {
       case 'battle_end':
         if (this.battle?.id === msg.battleId) this.battle.end(msg);
         break;
+      case 'opponent_thinking':
+        if (this.battle?.id === msg.battleId) this.battle.thinking(!!msg.thinking);
+        return;
+      case 'opponent_fallback':
+        if (this.battle?.id === msg.battleId) this.battle.fallback();
+        return;
       case 'error':
         this.onError(msg);
         break;
@@ -572,7 +561,7 @@ class App {
     if (outgoing) this.outgoing = null;
     const who = upper(outgoing?.peer.name ?? incoming?.from.name ?? 'The trainer');
     let text = '';
-    if (state === 'accepted') text = outgoing ? `${who} accepted!\nGet ready...` : 'Challenge accepted!\nGet ready...';
+    if (state === 'accepted') text = outgoing ? `${who} accepted!\nGet ready${WAIT}` : `Challenge accepted!\nGet ready${WAIT}`;
     else if (state === 'declined') text = reason === 'busy' ? `${who} is busy right now.` : reason === 'away' ? `${who} isn't at the battle screen.` : reason === 'expired' ? `${who} didn't answer in time.` : `${who} declined the battle.`;
     else if (state === 'cancelled') text = outgoing ? (reason === 'accepted_other' ? '' : 'Challenge cancelled.') : incoming ? `${who} withdrew the challenge.` : '';
     else if (state === 'expired') text = 'The challenge expired.';
@@ -596,10 +585,13 @@ class App {
     this.battle?.dispose();
     const battle = new Battle(this, msg);
     this.battle = battle;
+    this.musicOutcome = 'battle';
     this.result = null;
     if (this.prompt?.kind !== 'input') this.prompt = null;
     this.outgoing = null;
-    this.lastOpponent = { mode: battle.mode, peerId: msg.opponent?.id ? String(msg.opponent.id) : null, name: String(msg.opponent?.name ?? 'Trainer'), difficulty: String(msg.opponent?.difficulty ?? 'smart') };
+    const kind = String(msg.opponent?.kind ?? 'cpu');
+    const look = cleanLook(msg.opponent) ?? (kind === 'claude' ? CLAUDE_LOOK : null);
+    this.lastOpponent = { mode: battle.mode, peerId: msg.opponent?.id ? String(msg.opponent.id) : null, name: String(msg.opponent?.name ?? 'Trainer'), difficulty: String(msg.opponent?.difficulty ?? 'smart'), kind, model: String(msg.opponent?.model ?? ''), look };
     this.setScreen('battle');
     this.screen = 'battle';
     this.render();
@@ -607,6 +599,7 @@ class App {
 
   battleOver(battle: Battle, end: Msg): void {
     if (this.battle !== battle) return;
+    if (!battle.sawWin) this.musicOutcome = 'silent';
     this.result = {
       result: String(end.result ?? 'aborted'),
       reason: String(end.reason ?? ''),
@@ -615,6 +608,10 @@ class App {
       opponent: battle.foeName,
       peerId: this.lastOpponent?.peerId ?? null,
       difficulty: this.lastOpponent?.difficulty ?? 'smart',
+      kind: this.lastOpponent?.kind,
+      model: this.lastOpponent?.kind === 'claude' ? this.lastOpponent.model : '',
+      stats: this.lastOpponent?.kind === 'claude' ? claudeStats(end.opponentStats) : '',
+      look: this.lastOpponent?.look,
     };
     battle.dispose();
     this.battle = null;
@@ -634,7 +631,7 @@ class App {
       const clock = this.battle.clock;
       if (clock) parts.push(`${clock.label} ${Math.floor(clock.left / 60)}:${String(clock.left % 60).padStart(2, '0')}`);
     } else {
-      parts.push(conn === 'online' ? 'HELPER ONLINE' : conn === 'connecting' ? 'CONNECTING...' : 'HELPER OFFLINE');
+      parts.push(conn === 'online' ? 'HELPER ONLINE' : conn === 'connecting' ? `CONNECTING${WAIT}` : 'HELPER OFFLINE');
       if (conn === 'online' && this.trainer.name) parts.push(`TRAINER ${upper(this.trainer.name)}`);
     }
     if (this.floating) {
@@ -658,6 +655,7 @@ class App {
 
   render(): void {
     if (!this.open) return;
+    this.music.sync(this, this.musicOutcome === 'silent' ? 1000 : 500);
     try {
       this.renderBar();
       this.menus = [];
@@ -717,9 +715,8 @@ class App {
   }
 
   private renderOffline(view: HTMLElement): void {
-    const connecting = this.link.conn === 'connecting';
     view.append(frameBox(8, 8, 224, 80));
-    view.append(this.txt(connecting ? 'Looking for the battle helper...' : "The battle helper isn't running.", 8, 8), this.txt('Start it in Terminal:', 8, 24));
+    view.append(this.txt('BATTLE HELPER OFFLINE', 8, 8), this.txt('Start it in its own Terminal tab:', 8, 24));
     const code = place(el('div', 'pkb-code'), 8, 44, 224, 30);
     const lines: string[] = [];
     let line = '';
@@ -732,7 +729,7 @@ class App {
     lines.push(line);
     code.append(place(assets.text(lines.join('\n'), { font: 'small', color: 'std', lineHeight: 13 }), 4, 2));
     view.append(code);
-    this.msgBox(view, 8, 104, 128, 48, this.notice && Date.now() - this.noticeAt < 4000 ? this.notice : connecting ? 'Connecting...' : 'Retrying in the background.');
+    this.msgBox(view, 8, 104, 128, 48, this.notice && Date.now() - this.noticeAt < 4000 ? this.notice : `Retrying${WAIT}`);
     this.addMenu(this.menuBox(view, 152, 104, 80, 48), [
       { label: 'RETRY', pick: () => this.link.retryNow() },
       {
@@ -758,8 +755,11 @@ class App {
       const head = assets.text(r.result === 'win' ? 'YOU WIN!' : r.result === 'loss' ? 'YOU LOST' : r.result === 'tie' ? 'DRAW' : 'BATTLE ENDED', { color: 'std' });
       head.style.width = `calc(var(--u) * ${head.width * 2})`;
       head.style.height = `calc(var(--u) * ${head.height * 2})`;
-      view.append(place(head, 8, 6), this.txt(`VS ${upper(r.opponent)}`, 8, 40), this.txt(resultReason(r), 8, 58, { font: 'small' }));
-      if (r.turns) view.append(this.txt(`${r.turns} TURN${r.turns === 1 ? '' : 'S'}`, 8, 71, { font: 'small' }));
+      const foe = r.look ? trainerCanvas(cleanLook(r.look) ?? DEFAULT_LOOK) : null;
+      if (foe) view.append(place(foe, 214, 8));
+      view.append(place(head, 8, 6), this.txt(`VS ${upper(r.opponent)}${r.model ? ` (${r.model.toUpperCase()})` : ''}`, 8, 40), this.txt(resultReason(r), 8, 58, { font: 'small' }));
+      const stats = r.stats && cinnamon.settings.get('showClaudeStats') === true ? `   ${r.stats}` : '';
+      if (r.turns || stats) view.append(this.txt(`${r.turns} TURN${r.turns === 1 ? '' : 'S'}${stats}`, 8, 71, { font: 'small' }));
     }
     this.msgBox(view, 8, 104, 128, 48, this.notice && Date.now() - this.noticeAt < 6000 ? this.notice : 'Battle again?');
     const box = this.menuBox(view, 152, 104, 80, 48);
@@ -783,7 +783,7 @@ class App {
     const r = this.result;
     if (!r) return this.toLobby();
     if (r.mode === 'cpu') {
-      this.startCpu(r.difficulty);
+      this.startCpu(r.difficulty, r.kind === 'claude' ? 'claude' : 'cpu');
       return;
     }
     const peer = this.peers.find((p) => p.id === r.peerId);
@@ -793,12 +793,14 @@ class App {
       return;
     }
     this.link.send({ type: 'challenge', peerId: peer.id });
-    this.setNotice(`Challenging ${upper(peer.name)}...`);
+    this.setNotice(`Challenging ${upper(peer.name)}${WAIT}`);
     this.toLobby();
   }
 
-  startCpu(difficulty = 'smart'): void {
-    if (!this.link.send({ type: 'start_cpu', difficulty: difficulty === 'random' ? 'random' : 'smart' })) {
+  startCpu(difficulty = 'smart', opponent = 'cpu'): void {
+    this.panel = null;
+    const claude = opponent === 'claude' ? { opponent: 'claude', model: claudeModel(this.claude) } : {};
+    if (!this.link.send({ type: 'start_cpu', difficulty: difficulty === 'random' ? 'random' : 'smart', ...claude })) {
       this.setNotice("Can't reach the helper.");
       this.render();
     }
@@ -807,34 +809,48 @@ class App {
   private renderLobby(view: HTMLElement): void {
     const menuBox = this.menuBox(view, 8, 8, 88, 96);
     view.append(frameBox(112, 8, 120, 96));
-    const look = playerLook() ?? DEFAULT_LOOK;
-    const avatar = trainerCanvas(look);
-    if (avatar) view.append(place(avatar, 112, 8));
-    const idNum = parseInt(this.trainer.id.slice(0, 8), 16);
-    const tid = Number.isFinite(idNum) ? String(idNum % 100000).padStart(5, '0') : '-----';
-    view.append(this.txt(assets.fit(upper(this.playerName()), 100), 132, 9), this.txt(`IDNo.${tid}`, 132, 25, { font: 'small', color: 'gray' }));
     const list = place(el('div', 'pkb-menubox pkb-clip'), 112, 56, 120, 48);
-    view.append(list, this.txt(this.peers.length ? `TRAINERS NEARBY (${this.peers.length})` : 'TRAINERS NEARBY', 112, 42, { font: 'small', color: 'gray' }));
+    if (!this.panel) {
+      const avatar = playerSprite(playerLook() ?? DEFAULT_LOOK);
+      if (avatar) view.append(place(avatar, 112, 8));
+      const idNum = parseInt(this.trainer.id.slice(0, 8), 16);
+      const tid = Number.isFinite(idNum) ? String(idNum % 100000).padStart(5, '0') : '-----';
+      view.append(this.txt(assets.fit(upper(this.playerName()), 100), 132, 9), this.txt(`IDNo.${tid}`, 132, 25, { font: 'small', color: 'gray' }));
+      view.append(list, this.txt(this.peers.length ? `TRAINERS NEARBY (${this.peers.length})` : 'TRAINERS NEARBY', 112, 42, { font: 'small', color: 'gray' }));
+    }
     const msg = this.msgBox(view, 8, 120, this.prompt && this.prompt.kind !== 'input' ? 152 : 224, 32, '');
     const lan = this.lan.enabled;
     const items: MenuItem[] = [
-      { label: 'BATTLE CPU', pick: () => this.startCpu() },
+      {
+        label: 'BATTLE CPU',
+        pick: () => {
+          this.panel = 'foe';
+          this.panelIndex = 0;
+          this.lobbyFocus = 'peers';
+          this.render();
+        },
+      },
       { label: `SEEK: ${this.looking ? 'ON' : 'OFF'}`, disabled: !lan, pick: () => (lan ? this.toggleSeek() : this.lanOff()) },
       { label: 'ADD BY IP', disabled: !lan, pick: () => (lan ? this.openInput('ip') : this.lanOff()) },
       { label: 'TRAINER', pick: () => (playerLook() ? window.dispatchEvent(new CustomEvent('pe-open-trainer-customize')) : this.openInput('name')) },
       { label: 'REFRESH', disabled: !lan, pick: () => this.refresh() },
-      { label: `AUTO OPEN: ${cinnamon.settings.get('openAtStart') === false ? 'OFF' : 'ON'}`, pick: () => {
-        cinnamon.settings.set('openAtStart', cinnamon.settings.get('openAtStart') === false ? null : false);
-        this.render();
-      } },
+      {
+        label: 'OPTIONS',
+        pick: () => {
+          this.panel = 'options';
+          this.panelIndex = 0;
+          this.lobbyFocus = 'peers';
+          this.render();
+        },
+      },
     ];
     const hints = [
-      'Battle a CPU trainer with a random team.',
+      'Battle the CPU or CLAUDE with a random team.',
       this.looking ? 'Trainers on your Wi-Fi see you looking for a battle.' : 'Show trainers on your Wi-Fi that you want to battle.',
       "Add a trainer by IP when they don't show up.",
       'Change your trainer and name.',
       'Look for trainers again.',
-      'Open this window when Claude starts.',
+      'Auto open and music.',
     ];
     const modal = !!this.prompt;
     const menu = this.addMenu(menuBox, items, {
@@ -847,7 +863,28 @@ class App {
         if (!this.prompt) this.paintMsg(msg, hints[i] ?? '');
       },
     });
-    if (this.peers.length) {
+    if (this.panel) {
+      const panel = this.panel === 'foe' ? { title: 'OPPONENT', ...opponentMenu(this, this.claude) } : ns[`${this.panel}Panel`](this);
+      this.panelHints = panel.hints;
+      this.panelIndex = clamp(this.panelIndex, 0, panel.items.length - 1);
+      const clip = place(el('div', 'pkb-menubox pkb-clip'), 112, 24, 120, 80);
+      const box = el('div', 'pkb-menubox');
+      clip.append(box);
+      view.append(clip, this.txt(panel.title, 112, 8, { font: 'small', color: 'gray' }));
+      this.addMenu(box, panel.items, {
+        index: this.panelIndex,
+        focused: !modal && this.lobbyFocus === 'peers',
+        onMove: (i) => {
+          this.panelIndex = i;
+          this.lobbyFocus = 'peers';
+          this.syncLobbyFocus();
+          box.style.transform = `translateY(calc(var(--u) * ${-clamp(i - 4, 0, Math.max(0, panel.items.length - 5)) * 16}))`;
+          if (this.panel === 'music') this.music.preview(this, panel.items[i]?.preview ?? null);
+          if (!this.prompt) this.paintMsg(msg, panel.hints[i] ?? '');
+        },
+      });
+      box.style.transform = `translateY(calc(var(--u) * ${-clamp(this.panelIndex - 4, 0, Math.max(0, panel.items.length - 5)) * 16}))`;
+    } else if (this.peers.length) {
       const peerItems: MenuItem[] = this.peers.map((peer) => ({
         label: assets.fit(upper(peer.name), 120 - CURSOR_COL - 18),
         disabled: peer.status !== 'idle' && peer.status !== 'looking',
@@ -878,14 +915,15 @@ class App {
       this.lobbyFocus = 'menu';
       menu.focused = !modal;
       menu.paint();
-      list.append(place(assets.text(assets.wrap(!lan ? 'LAN is off. Start the helper without --no-lan.' : this.looking ? 'No trainers yet. Waiting...' : 'No trainers found. Turn SEEK on and ask a friend.', 'small', 116).join('\n'), { font: 'small', color: 'gray', lineHeight: 13 }), 0, 0));
+      list.append(place(assets.text(assets.wrap(!lan ? 'LAN is off. Start the helper without --no-lan.' : this.looking ? `No trainers yet. Waiting${WAIT}` : 'No trainers found. Turn SEEK on and ask a friend.', 'small', 116).join('\n'), { font: 'small', color: 'gray', lineHeight: 13 }), 0, 0));
     }
     if (this.prompt) {
       this.renderPrompt(view, msg);
       return;
     }
     const fresh = this.notice && Date.now() - this.noticeAt < 6000;
-    this.paintMsg(msg, fresh ? this.notice : this.lobbyFocus === 'peers' && this.peers[this.peerIndex] ? peerHint(this.peers[this.peerIndex]) : hints[this.lobbyIndex] ?? '');
+    const side = this.panel ? this.panelHints[this.panelIndex] : this.peers[this.peerIndex] && peerHint(this.peers[this.peerIndex]);
+    this.paintMsg(msg, fresh ? this.notice : (this.lobbyFocus === 'peers' && side) || (hints[this.lobbyIndex] ?? ''));
   }
 
   playerName(): string {
@@ -902,6 +940,7 @@ class App {
   }
 
   private syncLobbyFocus(): void {
+    if (this.lobbyFocus === 'menu' && this.panel === 'music') this.music.endPreview(this);
     const [menu, peers] = this.menus;
     if (menu) {
       menu.focused = this.lobbyFocus === 'menu' && !this.prompt;
@@ -924,7 +963,7 @@ class App {
 
   private refresh(): void {
     this.link.send({ type: 'lobby_refresh' });
-    this.setNotice('Looking for trainers...');
+    this.setNotice(`Looking for trainers${WAIT}`);
     this.render();
   }
 
@@ -970,7 +1009,7 @@ class App {
         { label: 'NO', pick: () => this.answer(c, false) },
       ]);
     } else if (prompt.kind === 'outgoing') {
-      this.paintMsg(msg, `${assets.fit(upper(this.outgoing?.peer.name ?? 'the trainer'), 152)}\nWaiting for an answer...`);
+      this.paintMsg(msg, `${assets.fit(upper(this.outgoing?.peer.name ?? 'the trainer'), 152)}\nWaiting for an answer${WAIT}`);
       this.addMenu(this.menuBox(view, 176, 120, 56, 32), [{ label: 'CANCEL', pick: () => this.cancelChallenge() }]);
     } else {
       const ip = prompt.field === 'ip';
@@ -1026,7 +1065,7 @@ class App {
         this.setNotice("That address doesn't look right.");
       } else {
         this.link.send(port ? { type: 'add_peer', host, port } : { type: 'add_peer', host });
-        this.setNotice(`Adding ${host}...`);
+        this.setNotice(`Adding ${host}${WAIT}`);
       }
     }
     this.prompt = null;
@@ -1079,6 +1118,18 @@ class App {
     this.act(action);
   }
 
+  private closePanel(): void {
+    if (this.panel === 'music') {
+      this.panel = 'options';
+      this.panelIndex = 1;
+      this.music.endPreview(this);
+    } else {
+      this.panel = null;
+      this.lobbyFocus = 'menu';
+    }
+    this.render();
+  }
+
   escCloses(): boolean {
     if (this.screen === 'battle' && this.battle) return !this.battle.inSubmenu;
     if (this.prompt) return false;
@@ -1118,9 +1169,8 @@ class App {
       if (action === 'esc' && this.lobbyFocus !== 'peers') return this.close();
       if (action === 'back' || action === 'esc') {
         if (this.lobbyFocus === 'peers') {
-          this.lobbyFocus = 'menu';
           peSound('SE_SELECT');
-          this.syncLobbyFocus();
+          this.closePanel();
         }
         return;
       }
@@ -1128,6 +1178,11 @@ class App {
         this.lobbyFocus = 'peers';
         peSound('SE_SELECT');
         this.render();
+        return;
+      }
+      if (action === 'left' && this.lobbyFocus === 'peers' && this.panel) {
+        peSound('SE_SELECT');
+        this.closePanel();
         return;
       }
       if (action === 'left' && this.lobbyFocus === 'peers') {
@@ -1150,47 +1205,6 @@ class App {
       if (this.screen === 'result') this.toLobby();
     } else menu.move(0, action === 'up' ? -1 : action === 'down' ? 1 : 0);
   }
-}
-
-function parsePeerAddress(value: string): { host: string; port: number | undefined } | null {
-  const text = value.trim();
-  const bracketed = /^\[([0-9A-Fa-f:.]+(?:%[\w.-]+)?)\](?::(\d{1,5}))?$/.exec(text);
-  const bareV6 = /^[0-9A-Fa-f]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(?:%[\w.-]+)?$/.test(text) ? [text, text] : null;
-  const plain = /^([^\s:[\]]+)(?::(\d{1,5}))?$/.exec(text);
-  const match = bracketed ?? bareV6 ?? plain;
-  if (!match) return null;
-  const port = match[2] ? Number(match[2]) : undefined;
-  if (port !== undefined && (port < 1 || port > 65535)) return null;
-  return { host: match[1], port };
-}
-
-function peerHint(peer: Peer | undefined): string {
-  if (!peer) return '';
-  const name = upper(peer.name);
-  const where = peer.address ? `\n${peer.address}` : '';
-  if (peer.status === 'looking') return `${name} is looking for a battle!${where}`;
-  if (peer.status === 'idle') return `${name} is around. Challenge?${where}`;
-  if (peer.status === 'battling') return `${name} is in a battle.${where}`;
-  return `${name} is away.${where}`;
-}
-
-function resultReason(r: ResultInfo): string {
-  const foe = upper(r.opponent);
-  const reasons: Record<string, string> = {
-    normal: r.result === 'win' ? `${foe} is out of ${POKEMON}!` : r.result === 'loss' ? `You're out of ${POKEMON}!` : 'Both sides went down.',
-    forfeit: 'You forfeited.',
-    opponent_forfeit: `${foe} forfeited.`,
-    timeout: 'You ran out of time.',
-    opponent_timeout: `${foe} ran out of time.`,
-    abandoned: 'No battle screen was open.',
-    opponent_abandoned: `${foe} left the battle.`,
-    opponent_disconnected: `${foe} disconnected.`,
-    error: 'The simulator hit an error.',
-    shutdown: 'The helper shut down.',
-    host_busy: 'The host was busy.',
-    start_timeout: "The battle didn't start.",
-  };
-  return reasons[r.reason] ?? r.reason;
 }
 
 // sessionStorage lives as long as this window's page: it outlasts extension hot reloads and syncs, not an app restart
@@ -1241,6 +1255,7 @@ let lastMode = app.floating;
 cinnamon.settings.onChange(() => {
   try {
     app.resetFloat();
+    app.launcherArt.sync();
     if (app.floating !== lastMode) {
       lastMode = app.floating;
       app.layout();
@@ -1255,6 +1270,10 @@ cinnamon.settings.onChange(() => {
 
 app.start();
 settingsRow.start();
+listen(window, 'pe-music-state', (event: CustomEvent) => {
+  if (app.music.heard(event.detail)) app.music.sync(app);
+  (app as any).syncMute();
+});
 listen(window, 'pe-player-change', () => {
   app.syncName();
   if (app.open && app.screen === 'lobby') app.render();

@@ -174,8 +174,8 @@ class Screen {
     c.fillRect(x + 1, y + 1, capW - 2, 11);
     c.drawImage(label.canvas, x + 3 - label.ink.x, y + 3 - label.ink.y);
     this.boxes.push({ x, y, w: capW, h: 14, kind: 'control', name });
-    c.drawImage(cap.canvas, x + capW + 3, y - 2);
-    const ink = { x: x + capW + 3 + cap.ink.x, y: y - 2 + cap.ink.y, w: cap.ink.w, h: cap.ink.h };
+    c.drawImage(cap.canvas, x + capW + 3, y);
+    const ink = { x: x + capW + 3 + cap.ink.x, y: y + cap.ink.y, w: cap.ink.w, h: cap.ink.h };
     this.boxes.push({ ...ink, kind: 'text', name: caption });
     return { x, y, w: total, h: 14 };
   }
@@ -221,7 +221,7 @@ const SOUND_KEY = 'pokemon-emerald-sound:v1';
 const SOUND_EVENT = 'pe-sound-change';
 type SoundState = { master: { volume: number }; windows: Record<string, { muted: boolean }> };
 function readSound(): SoundState {
-  const base: SoundState = { master: { volume: 0.35 }, windows: { battle: { muted: true }, summary: { muted: false } } };
+  const base: SoundState = { master: { volume: 0.35 }, windows: { battle: { muted: true }, summary: { muted: false }, chat: { muted: false } } };
   try {
     const raw = JSON.parse(localStorage.getItem(SOUND_KEY) || 'null');
     if (raw && typeof raw === 'object') {
@@ -240,6 +240,11 @@ function writeSound(next: SoundState): void {
     window.dispatchEvent(new CustomEvent(SOUND_EVENT, { detail: next }));
   } catch {}
 }
+// the chat scope (reply cries) joins the shared store once, unmuted; master and the other windows stay as stored
+try {
+  const stored = JSON.parse(localStorage.getItem(SOUND_KEY) || 'null');
+  if (stored && typeof stored === 'object' && !stored.windows?.chat) writeSound({ ...stored, windows: { ...(stored.windows ?? {}), chat: { muted: false } } });
+} catch {}
 const sound = {
   read: readSound,
   event: SOUND_EVENT,
@@ -257,38 +262,95 @@ const sound = {
   lastGain: 0,
 };
 
-let ctxAudio: AudioContext | null = null;
-// the summary's select blip; only from a click or key press, at the shared gain
-function blip(): void {
-  const gain = sound.gain('summary');
-  sound.lastGain = gain;
-  if (gain <= 0) return;
-  try {
-    ctxAudio ??= new AudioContext();
-    if (ctxAudio.state === 'suspended') void ctxAudio.resume().catch(() => {});
-    const t = ctxAudio.currentTime + 0.01;
-    [[880, 0, 0.04], [1320, 0.045, 0.06]].forEach(([freq, at, dur]) => {
-      const osc = ctxAudio!.createOscillator();
-      const g = ctxAudio!.createGain();
-      osc.type = 'square';
-      osc.frequency.value = freq;
-      g.gain.setValueAtTime(0.2 * gain, t + at);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + at + dur);
-      osc.connect(g).connect(ctxAudio!.destination);
-      osc.start(t + at);
-      osc.stop(t + at + dur + 0.02);
-    });
-  } catch {}
-}
-G.cleanups.push(() => {
-  void ctxAudio?.close().catch(() => {});
-  ctxAudio = null;
-});
-
 // an Emerald sound effect (songs.h name) from the pokemon-audio extension; silent when that extension is off
-function sfx(id: 'SE_SELECT' | 'SE_FAILURE' | 'SE_WIN_OPEN' | 'SE_BALL'): void {
+function sfx(id: 'SE_SELECT' | 'SE_FAILURE' | 'SE_WIN_OPEN' | 'SE_BALL' | 'SE_EXP' | 'SE_EXP_MAX' | 'SE_SHINY'): void {
   try {
     (window as any).__peAudio?.play(id, { window: 'summary' });
+  } catch {}
+}
+
+// TryShinyAnimation (battle_anim_throw.c): two Task_ShinyStars, one encircling the mon (radius 24, phase +12 a
+// frame) and one crossing it diagonally (from -32,+32, 5 px a frame from age 4), each making a star
+// every 4 frames: a 16x16 one, three 8x8 medium, one 8x8 small. SE_SHINY with the first diagonal star.
+// center and unit: the sprite's centre on screen and CSS px per GBA px. Resolves when the last star is gone.
+const FRAME_MS = 1000 / 59.7275;
+let sparkling: Promise<void> = Promise.resolve();
+function sparkle(center: { x: number; y: number }, unit: number, win = 'summary'): Promise<void> {
+  const run = sparkling.then(() => sparkleNow(center, unit, win));
+  sparkling = run.catch(() => {});
+  return run;
+}
+async function sparkleNow(center: { x: number; y: number }, unit: number, win: string): Promise<void> {
+  const sheet = await loadImage(G.assets.ui('gold-stars'));
+  try {
+    (window as any).__peAudio?.play('SE_SHINY', { window: win });
+  } catch {}
+  const size = 112;
+  const canvas = document.createElement('canvas');
+  canvas.className = 'pkp-sparkle';
+  canvas.width = size;
+  canvas.height = size;
+  canvas.setAttribute('aria-hidden', 'true');
+  const dpr = window.devicePixelRatio || 1;
+  const snap = (v: number) => Math.round(v * dpr) / dpr;
+  Object.assign(canvas.style, {
+    left: `${snap(center.x - (size / 2) * unit)}px`,
+    top: `${snap(center.y - (size / 2) * unit)}px`,
+    width: `${size * unit}px`,
+    height: `${size * unit}px`,
+  });
+  document.body.append(canvas);
+  const ctx = canvas.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  const star = (idx: number, x: number, y: number) => {
+    if (!sheet) return;
+    const [sx, sy, w] = idx === 0 ? [0, 0, 16] : idx < 4 ? [0, 16, 8] : [8, 16, 8];
+    ctx.drawImage(sheet, sx, sy, w, w, Math.round(size / 2 + x - w / 2), Math.round(size / 2 + y - w / 2), w, w);
+  };
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    star(0, 14, -14);
+    await new Promise((done) => G.later(done, 1000));
+    canvas.remove();
+    return;
+  }
+  // gSineTable entries times amp, shifted right by 8: an arithmetic shift floors, so negatives round down
+  const sin = (phase: number, amp: number) => Math.floor((Math.round(Math.sin(((phase & 255) / 256) * 2 * Math.PI) * 256) * amp) / 256);
+  const start = performance.now();
+  await new Promise<void>((done) => {
+    const tick = () => {
+      if (G.rt.disposed || !canvas.isConnected) return done();
+      const frame = Math.floor((performance.now() - start) / FRAME_MS);
+      ctx.clearRect(0, 0, size, size);
+      for (let idx = 0; idx < 5; idx++) {
+        const age = frame - idx * 4;
+        if (age < 0) continue;
+        if (age * 12 <= 255) star(idx, sin(age * 12, 24), sin(age * 12 + 64, 24));
+        // hidden for its first 4 frames, then 5 px a frame: x = -27 at age 4
+        const moved = age - 3;
+        if (moved > 0 && -32 + 5 * moved <= 32) star(idx, -32 + 5 * moved, 32 - 5 * moved);
+      }
+      if (frame > 16 + 22) {
+        canvas.remove();
+        return done();
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+function sfxStop(id: string): void {
+  try {
+    (window as any).__peAudio?.stop?.(id, { window: 'summary' });
+  } catch {}
+}
+
+// a fanfare (MUS_LEVEL_UP, MUS_EVOLVED) in the summary window, through the audio extension's single music
+// channel, only while that window is unmuted
+function fanfare(id: string): void {
+  if (sound.gain('summary') <= 0) return;
+  try {
+    (window as any).__peAudio?.fanfare?.(id, { window: 'summary' });
   } catch {}
 }
 
@@ -299,4 +361,4 @@ function cry(species: number): void {
   } catch {}
 }
 
-Object.assign(G, { Screen, glyphRun, textWidth, loadImage, auditBoxes, overlaps, sound, blip, sfx, cry });
+Object.assign(G, { Screen, glyphRun, textWidth, loadImage, auditBoxes, overlaps, sound, sfx, sfxStop, fanfare, cry, sparkle });

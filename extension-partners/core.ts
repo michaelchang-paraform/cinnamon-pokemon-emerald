@@ -9,7 +9,7 @@ declare const cinnamon: {
   onDispose(fn: () => void): void;
 };
 
-// partner levels for stage 2 and stage 3; level is 5 + assistant replies, so 10 and 30 replies
+// partner levels for stage 2 and stage 3; levels come from EXP on the Medium Fast curve (level^3)
 const EVOLVE_AT = [15, 35];
 const START_LEVEL = 5;
 const MAX_LEVEL = 100;
@@ -17,6 +17,17 @@ const BASE_WEIGHT = 3;
 const SINGLE_WEIGHT = 1;
 const STORE_KEY = 'pokemon-partners:v1';
 const STORE_CAP = 400;
+const EXP_KEY = 'pokemon-partners:exp:v1';
+const SHINY_KEY = 'pokemon-partners:shiny:v1';
+const CRY_KEY = 'pokemon-partners:cries:v1';
+// the Shiny odds setting; Gen 3's 1/8192 is the default
+const SHINY_ODDS = [8192, 4096, 512, 64];
+const CHARS_PER_TOKEN = 4;
+const TOKENS_PER_EXP = 100;
+const EXP_PER_TOOL = 3;
+// dedupe hashes kept per thread, and for how many threads; older ones fold into a row watermark
+const EXP_HASH_CAP = 4000;
+const EXP_THREAD_CAP = 80;
 const THREAD_KINDS = ['code', 'chat', 'cowork'];
 
 type Group = [string, Array<[number[], number, number]>];
@@ -31,6 +42,10 @@ type Data = {
   t: TrainerData[];
 };
 type Entry = [base: number, count: number, used: number, nickname?: string];
+// seed EXP, output tokens and tool calls counted, row watermark (null: set on first open), max row seen, and the
+// largest [tokens, tools] seen per stable id (hashed), so a re-render that reads differently only tops up
+type ExpRecord = { e: number; t: number; k: number; w: number | null; m: number; v: Record<string, [number, number]> };
+type ExpItem = { id: string; row: number; tokens: number; tools: number };
 type TrainerSetting = { base: string; colors: Array<string | null>; name: string };
 
 const rt = { disposed: false };
@@ -218,8 +233,15 @@ function pickBase(key: string): number {
   return data.s[Math.floor(roll / SINGLE_WEIGHT)];
 }
 
+// the old reply-count level, only to seed EXP for partners from before EXP
 const levelFor = (count: number) => Math.min(MAX_LEVEL, START_LEVEL + count);
-const stageFor = (count: number) => EVOLVE_AT.filter((at) => levelFor(count) >= at).length;
+const levelForExp = (exp: number) => {
+  let level = Math.min(MAX_LEVEL, Math.max(1, Math.floor(Math.cbrt(exp))));
+  while (level < MAX_LEVEL && (level + 1) ** 3 <= exp) level++;
+  while (level > 1 && level ** 3 > exp) level--;
+  return level;
+};
+const stageFor = (level: number) => EVOLVE_AT.filter((at) => level >= at).length;
 
 // walks the family from the base, choosing branches with a draw per stage from the thread's own seed
 function speciesAt(key: string, base: number, stage: number): number {
@@ -237,6 +259,10 @@ function speciesAt(key: string, base: number, stage: number): number {
 // one entry per thread, [base species, assistant replies counted, last use]; localStorage, oldest dropped past STORE_CAP
 class Store {
   private entries: Record<string, Entry> = {};
+  private exps: Record<string, ExpRecord> = {};
+  private fresh = new Set<string>();
+  // one roll per partner, never repeated: 0 not shiny, 1 shiny not yet seen, 2 shiny and its sparkle played
+  private shinies: Record<string, number> = {};
   private saveTimer = 0;
 
   constructor() {
@@ -244,31 +270,135 @@ class Store {
       const raw = JSON.parse(localStorage.getItem(STORE_KEY) || '{}');
       if (raw && typeof raw.t === 'object') this.entries = raw.t;
     } catch {}
+    try {
+      const raw = JSON.parse(localStorage.getItem(EXP_KEY) || '{}');
+      if (raw && typeof raw.x === 'object') this.exps = raw.x;
+    } catch {}
+    try {
+      const raw = JSON.parse(localStorage.getItem(SHINY_KEY) || '{}');
+      if (raw && typeof raw.s === 'object') this.shinies = raw.s;
+    } catch {}
+  }
+
+  shinyState(key: string): number {
+    let state = this.shinies[key];
+    if (state !== 0 && state !== 1 && state !== 2) {
+      const setting = Number(cinnamon.settings.get('shinyOdds'));
+      const odds = SHINY_ODDS.includes(setting) ? setting : SHINY_ODDS[0];
+      const draw = new Uint32Array(1);
+      crypto.getRandomValues(draw);
+      state = this.shinies[key] = draw[0] % odds === 0 ? 1 : 0;
+      this.save();
+    }
+    return state;
+  }
+
+  // true the first time a turn id is seen: the cry plays once per turn across re-renders and reopens
+  firstCry(id: string): boolean {
+    const tag = hash(id).toString(36);
+    let seen: string[] = [];
+    try {
+      seen = JSON.parse(localStorage.getItem(CRY_KEY) || '[]');
+    } catch {}
+    if (!Array.isArray(seen)) seen = [];
+    if (seen.includes(tag)) return false;
+    seen.push(tag);
+    try {
+      localStorage.setItem(CRY_KEY, JSON.stringify(seen.slice(-300)));
+    } catch {}
+    return true;
+  }
+
+  markShinySeen(key: string): void {
+    if (this.shinyState(key) !== 1) return;
+    this.shinies[key] = 2;
+    this.save();
+  }
+
+  // partners from before EXP keep their level (seed level^3) and count only rows after the first open
+  private expRecord(key: string): ExpRecord {
+    let rec = this.exps[key];
+    if (!rec || typeof rec.e !== 'number') {
+      const entry = this.get(key);
+      const fresh = this.fresh.has(key);
+      rec = this.exps[key] = { e: levelFor(fresh ? 0 : entry[1]) ** 3, t: 0, k: 0, w: fresh ? -1 : null, m: -1, v: {} };
+      this.save();
+    }
+    // records from the hash-set version: their counted rows stay behind the watermark
+    if (!rec.v || typeof rec.v !== 'object') {
+      if ((rec as any).h?.length) rec.w = Math.max(rec.w ?? -1, rec.m);
+      delete (rec as any).h;
+      rec.v = {};
+    }
+    return rec;
+  }
+
+  exp(key: string): number {
+    const rec = this.expRecord(key);
+    return Math.min(MAX_LEVEL ** 3, rec.e + Math.floor(rec.t / TOKENS_PER_EXP) + EXP_PER_TOOL * rec.k);
+  }
+
+  level(key: string): number {
+    return levelForExp(this.exp(key));
+  }
+
+  expWatermark(key: string): number | null {
+    return this.expRecord(key).w;
+  }
+
+  setExpWatermark(key: string, row: number): void {
+    this.expRecord(key).w = row;
+    this.save();
+  }
+
+  // each stable id (a message's data-turn-key, a tool group's data-item-key) counts its largest reading once;
+  // returns the levels around the gain
+  addExp(key: string, items: ExpItem[]): { from: number; to: number; level: number; before: number; after: number } | null {
+    const rec = this.expRecord(key);
+    if (rec.w === null) return null;
+    const from = this.exp(key);
+    const level = this.level(key);
+    const before = this.species(key);
+    let added = false;
+    for (const item of items) {
+      if (item.row <= rec.w) continue;
+      const id = hash(item.id).toString(36);
+      const had = rec.v[id] ?? [0, 0];
+      const tokens = Math.max(had[0], item.tokens);
+      const tools = Math.max(had[1], item.tools);
+      rec.m = Math.max(rec.m, item.row);
+      if (tokens === had[0] && tools === had[1]) continue;
+      rec.t += tokens - had[0];
+      rec.k += tools - had[1];
+      rec.v[id] = [tokens, tools];
+      added = true;
+    }
+    if (!added) return null;
+    const ids = Object.keys(rec.v);
+    if (ids.length > EXP_HASH_CAP) for (const id of ids.slice(0, ids.length - EXP_HASH_CAP)) delete rec.v[id];
+    this.get(key, true);
+    this.save();
+    return { from, to: this.exp(key), level, before, after: this.species(key) };
   }
 
   get(key: string, touch = false): Entry {
     let entry = this.entries[key];
     if (!Array.isArray(entry) || !assets.data?.n[entry[0]]) {
       entry = this.entries[key] = [pickBase(key), 0, Date.now()];
+      this.fresh.add(key);
       this.save();
     } else if (touch) {
       entry[2] = Date.now();
       this.save();
     }
+    // the partner's one shiny roll happens as soon as it exists (or on the first load after shiny odds arrived)
+    if (this.shinies[key] === undefined) this.shinyState(key);
     return entry;
   }
 
-  species(key: string, count?: number): number {
+  species(key: string, level?: number): number {
     const entry = this.get(key);
-    return speciesAt(key, entry[0], stageFor(count ?? entry[1]));
-  }
-
-  addReply(key: string): { before: number; after: number } {
-    const entry = this.get(key, true);
-    const before = this.species(key);
-    entry[1]++;
-    this.save();
-    return { before, after: this.species(key) };
+    return speciesAt(key, entry[0], stageFor(level ?? this.level(key)));
   }
 
   save(): void {
@@ -285,8 +415,21 @@ class Store {
       keys.sort((a, b) => this.entries[b][2] - this.entries[a][2]);
       for (const key of keys.slice(STORE_CAP)) delete this.entries[key];
     }
+    for (const key of Object.keys(this.exps)) if (!this.entries[key]) delete this.exps[key];
+    for (const key of Object.keys(this.shinies)) if (!this.entries[key]) delete this.shinies[key];
+    // threads past the hash cap keep their totals; their old rows stay out through the watermark
+    const recent = Object.keys(this.exps).sort((a, b) => (this.entries[b]?.[2] ?? 0) - (this.entries[a]?.[2] ?? 0));
+    for (const key of recent.slice(EXP_THREAD_CAP)) {
+      const rec = this.exps[key];
+      if (rec.v && Object.keys(rec.v).length) {
+        rec.w = Math.max(rec.w ?? -1, rec.m);
+        rec.v = {};
+      }
+    }
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, t: this.entries }));
+      localStorage.setItem(EXP_KEY, JSON.stringify({ v: 1, x: this.exps }));
+      localStorage.setItem(SHINY_KEY, JSON.stringify({ v: 1, s: this.shinies }));
     } catch {}
   }
 
@@ -302,13 +445,13 @@ class Store {
     this.save();
   }
 
-  setCount(key: string, count: number): void {
-    this.get(key, true)[1] = Math.max(0, count);
-    this.save();
-  }
 
   snapshot(): Record<string, Entry> {
     return this.entries;
+  }
+
+  expSnapshot(key: string): ExpRecord {
+    return this.expRecord(key);
   }
 }
 const store = new Store();
@@ -429,45 +572,11 @@ function paintTrainer(canvas: HTMLCanvasElement, trainer: TrainerData, frame: nu
   ctx.putImageData(image, 0, 0);
 }
 
-// battle extension's 8-bit sounds toggle; no battle extension means no sound
-function soundOn(): boolean {
-  try {
-    const Sfx = (window as any).__pkb?.Sfx;
-    return !!Sfx && new Sfx().enabled === true;
-  } catch {
-    return false;
-  }
-}
-
-let audio: AudioContext | null = null;
-// the evolution jingle, at the shared sound state's gain (master volume times the summary window's level)
-function jingle(): void {
-  const level = (window as any).__pkp?.sound?.gain('summary') ?? 0;
-  if (level <= 0) return;
-  try {
-    audio ??= new AudioContext();
-    if (audio.state === 'suspended') void audio.resume().catch(() => {});
-    const t = audio.currentTime + 0.02;
-    [523, 659, 784, 1046, 784, 1046].forEach((freq, i) => {
-      const osc = audio!.createOscillator();
-      const gain = audio!.createGain();
-      osc.type = 'square';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.13 * level, t + i * 0.12);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.12 + (i === 5 ? 0.4 : 0.11));
-      osc.connect(gain).connect(audio!.destination);
-      osc.start(t + i * 0.12);
-      osc.stop(t + i * 0.12 + 0.42);
-    });
-  } catch {}
-}
+// sounds that play on their own need the user looking: the page visible and the app window focused
+const watching = () => !document.hidden && document.hasFocus();
 
 const ns = ((window as any).__pkp = {});
 Object.assign(ns, {
-  EVOLVE_AT, START_LEVEL, MAX_LEVEL, levelFor, hash, rng, rt, errors, report, guard, cleanups, timers, later, cancel, listen, el, assets, store, stageFor, speciesAt,
-  threadKeyFromRow, currentThread, scale, applyScale, scaleStyle, trainerSetting, paintTrainer, groupBase, jingle, soundOn,
-  closeAudio: () => {
-    void audio?.close().catch(() => {});
-    audio = null;
-  },
+  EVOLVE_AT, START_LEVEL, MAX_LEVEL, SHINY_ODDS, levelFor, levelForExp, CHARS_PER_TOKEN, hash, rng, rt, errors, report, guard, cleanups, timers, later, cancel, listen, el, assets, store, stageFor, speciesAt,
+  threadKeyFromRow, currentThread, watching, scale, applyScale, scaleStyle, trainerSetting, paintTrainer, groupBase,
 });

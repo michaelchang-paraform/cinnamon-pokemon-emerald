@@ -1,3 +1,5 @@
+import { ITEMS } from './items.ts';
+
 type FontSource = { family: string; property: string; file: string };
 type FontFaceSpec = { family: string; property: string; descriptors: FontFaceDescriptors };
 
@@ -112,6 +114,10 @@ function scaleVars(k: number): Record<string, string> {
     '--pe-px': px(k),
     '--pe-px-small': px(small),
     '--pe-px-h1': px(k + 1),
+    // a 24 px item icon at whole device pixels inside the 12 font px heading box
+    '--pe-item-px': px(Math.max(1, Math.floor(k / 2))),
+    // group heading icons draw one font pixel step up (k + 1); a 24 px item takes the largest whole multiple in that 12 px box
+    '--pe-head-item-px': px(Math.max(1, Math.floor((k + 1) / 2))),
     '--pe-fs-body': px(16 * k),
     '--pe-fs-small': px(16 * small),
     '--pe-fs-h1': px(16 * (k + 1)),
@@ -200,8 +206,9 @@ function placeCursor(): void {
     if (!rect) continue;
     const w = CURSOR_ART.w * artPx;
     const h = CURSOR_ART.h * artPx;
-    let left = rect.left - w - CURSOR_ART.gap * artPx;
-    if (left < 0) left = rect.left - w >= -w / 3 ? Math.max(0, rect.left - w) : rect.left + CURSOR_ART.gap * artPx;
+    const left = rect.left - w - CURSOR_ART.gap * artPx;
+    // no column to its left: skip rather than draw over the control
+    if (left < 0) continue;
     cursor.style.transform = `translate(${snap(left)}px, ${snap(rect.top + (rect.height - h) / 2)}px)`;
     cursor.toggleAttribute('data-home', el !== hovered && el !== focused);
     cursor.hidden = false;
@@ -248,14 +255,22 @@ function hop(): void {
 }
 
 const SETTINGS_ANCHOR = '[data-settings-row][data-cm-ext-row], [data-settings-row][data-pkb-row], [data-settings-row][data-pkp-settings]';
-const BALLS = ['poke', 'great', 'ultra', 'master', 'safari', 'net', 'dive', 'nest', 'repeat', 'timer', 'luxury', 'premier'] as const;
-const BALL_LABELS: Record<string, string> = { poke: 'Pok\u00e9 Ball', great: 'Great Ball', ultra: 'Ultra Ball', master: 'Master Ball', safari: 'Safari Ball', net: 'Net Ball', dive: 'Dive Ball', nest: 'Nest Ball', repeat: 'Repeat Ball', timer: 'Timer Ball', luxury: 'Luxury Ball', premier: 'Premier Ball' };
+const ICON_NAMES = new Map(ITEMS.map(([id, name]) => [id, name]));
+const BALL_IDS = new Set(ITEMS.filter(([, , pocket]) => pocket === 'balls').map(([id]) => id));
+const POCKETS = [['balls', 'Poke Balls'], ['items', 'Items'], ['key', 'Key Items'], ['berries', 'Berries']] as const;
+const isIcon = (value: unknown): value is string => typeof value === 'string' && ICON_NAMES.has(value);
+// headings draw balls from their cropped 12 px sprite and items from their 24 px one at whole device pixels, both in the 12 px box
+const headingArt = (id: string) => (BALL_IDS.has(id) ? `var(--pe-ball-${id})` : `var(--pe-item-${id})`);
+function markItem(node: Element, id: string): void {
+  const item = !BALL_IDS.has(id);
+  if (node.hasAttribute('data-pe-item') !== item) node.toggleAttribute('data-pe-item', item);
+}
 let sizeRow: HTMLElement | null = null;
 let ballRow: HTMLElement | null = null;
 
 function groupBall(): string {
   const saved = cinnamon.settings.get('groupBall');
-  return typeof saved === 'string' && (BALLS as readonly string[]).includes(saved) ? saved : 'poke';
+  return isIcon(saved) ? saved : 'poke';
 }
 
 const rowLeaves = (row: Element) => [...(row.querySelector('[data-settings-text]') ?? row).querySelectorAll('*')]
@@ -264,8 +279,8 @@ const rowLeaves = (row: Element) => [...(row.querySelector('[data-settings-text]
 function syncSizeRow(): void {
   const current = textSize();
   sizeRow?.querySelectorAll<HTMLElement>('[data-pe-size]').forEach((button) => button.setAttribute('aria-checked', String(button.dataset.peSize === current)));
-  const ball = groupBall();
-  ballRow?.querySelectorAll<HTMLElement>('[data-pe-ball]').forEach((button) => button.setAttribute('aria-checked', String(button.dataset.peBall === ball)));
+  const pick = ballRow?.querySelector<HTMLElement>('.pe-icon-pick');
+  if (pick) paintPick(pick, groupBall());
 }
 
 // a settings row cloned from the Pokemon row before it, so it matches, holding a radio group of options
@@ -294,22 +309,37 @@ function pickerRow(anchor: Element, title: string, description: string, options:
   return row;
 }
 
-function option(key: string, value: string, label: string, ball: boolean): HTMLElement {
+function option(key: string, value: string, label: string): HTMLElement {
   const button = document.createElement('button');
   button.type = 'button';
-  button.className = ball ? 'pe-size-option pe-ball-option' : 'pe-size-option';
+  button.className = 'pe-size-option';
   button.setAttribute('role', 'radio');
-  if (ball) {
-    button.dataset.peBall = value;
-    button.setAttribute('aria-label', label);
-    const art = document.createElement('span');
-    art.style.setProperty('--pe-ball', `var(--pe-ball-${value})`);
-    button.append(art);
-  } else {
-    button.dataset.peSize = value;
-    button.textContent = label;
-  }
+  button.dataset.peSize = value;
+  button.textContent = label;
   button.addEventListener('click', guard(() => cinnamon.settings.set(key, value)));
+  return button;
+}
+
+// the Settings button that opens the icon picker for the default icon
+function paintPick(button: HTMLElement, id: string): void {
+  const name = ICON_NAMES.get(id) ?? '';
+  const label = `Default group icon: ${name}`;
+  if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
+  const art = button.firstElementChild as HTMLElement | null;
+  if (art && art.style.getPropertyValue('--pe-ball') !== headingArt(id)) art.style.setProperty('--pe-ball', headingArt(id));
+  if (art) markItem(art, id);
+  const text = button.lastElementChild as HTMLElement | null;
+  if (text && text.textContent !== name) text.textContent = name;
+}
+
+function pickButton(): HTMLElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'pe-size-option pe-icon-pick';
+  button.dataset.peKey = '';
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.append(document.createElement('span'), document.createElement('span'));
+  paintPick(button, groupBall());
   return button;
 }
 
@@ -326,8 +356,8 @@ function ensureSizeRow(): void {
   sizeRow?.remove();
   ballRow?.remove();
   sizeRow = pickerRow(anchor, 'Text size', 'Pixel font size for the Pokemon Emerald theme. Large chat makes messages and the input box one step bigger.',
-    Object.entries(TEXT_SIZES).map(([value, label]) => option('textSize', value, label, false)));
-  ballRow = pickerRow(anchor, 'Default group ball', 'The ball before a sidebar group title. Click a ball on a group to pick one for that group.', BALLS.map((ball) => option('groupBall', ball, BALL_LABELS[ball], true)));
+    Object.entries(TEXT_SIZES).map(([value, label]) => option('textSize', value, label)));
+  ballRow = pickerRow(anchor, 'Default group icon', 'The icon before a sidebar group title: a Poke Ball or any item you can find in Emerald. Click the icon on a group to pick one for that group.', [pickButton()]);
   anchor.after(sizeRow);
   sizeRow.after(ballRow);
   syncSizeRow();
@@ -348,9 +378,21 @@ function schedule(): void {
 }
 
 // a sidebar group toggle or its ball points at the heading, so the cursor clears the ball
+// the arrow marks text items and rows; an icon-only control has no text for it to point at
+const ICON_PARTS = '[data-cds="Icon"], svg, img, canvas, .sr-only, [aria-hidden="true"]';
+function hasText(el: Element): boolean {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.parentElement?.closest(ICON_PARTS)) continue;
+    if (/[^\s\ue000-\uf8ff]/.test(node.textContent ?? '')) return true;
+  }
+  return false;
+}
 const targetOf = (node: EventTarget | null) => {
   const target = node instanceof Element ? node.closest(TARGET) : null;
-  return target?.matches('[data-group-toggle], .pe-ball-btn') ? target.closest('h3') ?? target : target;
+  if (!target) return null;
+  if (target.matches('[data-group-toggle], .pe-ball-btn')) return target.closest('h3') ?? target;
+  return target.hasAttribute('data-cds-icon-only') || !hasText(target) ? null : target;
 };
 
 // a ball button on each sidebar group heading; groups are keyed by the app's data-group-section, else their title
@@ -365,7 +407,7 @@ function groupBalls(): Record<string, string> {
 
 function ballFor(key: string): string {
   const own = groupBalls()[key];
-  return typeof own === 'string' && (BALLS as readonly string[]).includes(own) ? own : groupBall();
+  return isIcon(own) ? own : groupBall();
 }
 
 function ensureGroupBalls(): void {
@@ -376,16 +418,17 @@ function ensureGroupBalls(): void {
       button = document.createElement('button');
       button.type = 'button';
       button.className = 'pe-ball-btn';
-      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-haspopup', 'dialog');
       h3.prepend(button);
     }
     const key = groupKey(h3);
     const ball = ballFor(key);
-    const label = `Change ${groupTitle(h3)} ball`;
+    const label = `Change ${groupTitle(h3)} icon: ${ICON_NAMES.get(ball) ?? ''}`;
     if (button.dataset.peKey !== key) button.dataset.peKey = key;
     if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
-    const art = `var(--pe-ball-${ball})`;
+    const art = headingArt(ball);
     if (button.style.getPropertyValue('--pe-ball') !== art) button.style.setProperty('--pe-ball', art);
+    markItem(button, ball);
     button.setAttribute('aria-expanded', String(ballMenu?.dataset.peKey === key));
   }
 }
@@ -402,61 +445,163 @@ function closeBallMenu(focusBack: boolean): void {
   schedule();
 }
 
-function openBallMenu(anchor: HTMLButtonElement): void {
+const fold = (text: string) => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const visibleOptions = (menu: HTMLElement) => [...menu.querySelectorAll<HTMLElement>('.pe-icon-option:not([hidden])')];
+
+function showName(menu: HTMLElement, id: string | undefined): void {
+  const line = menu.querySelector('.pe-icon-name');
+  if (line) line.textContent = (id && ICON_NAMES.get(id)) || '';
+}
+
+function focusOption(menu: HTMLElement, option: HTMLElement | undefined): void {
+  if (!option) return;
+  for (const other of menu.querySelectorAll<HTMLElement>('.pe-icon-option[tabindex="0"]')) other.tabIndex = -1;
+  option.tabIndex = 0;
+  option.focus({ preventScroll: true });
+  const list = menu.querySelector<HTMLElement>('.pe-icon-list');
+  if (!list) return;
+  const top = option.offsetTop;
+  const head = option.closest('.pe-icon-group')?.querySelector<HTMLElement>('.pe-icon-head')?.offsetHeight ?? 0;
+  if (top - head < list.scrollTop) list.scrollTop = Math.max(0, top - head);
+  else if (top + option.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + option.offsetHeight - list.clientHeight;
+}
+
+function filterIcons(menu: HTMLElement, query: string): void {
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  for (const option of menu.querySelectorAll<HTMLElement>('.pe-icon-option')) {
+    const name = fold(ICON_NAMES.get(option.dataset.peIcon ?? '') ?? '');
+    option.hidden = !words.every((word) => name.includes(word));
+  }
+  for (const group of menu.querySelectorAll<HTMLElement>('.pe-icon-group')) group.hidden = !group.querySelector('.pe-icon-option:not([hidden])');
+  const empty = menu.querySelector<HTMLElement>('.pe-icon-empty');
+  if (empty) empty.hidden = visibleOptions(menu).length > 0;
+}
+
+function chooseIcon(menu: HTMLElement, id: string | undefined): void {
+  if (!isIcon(id)) return;
+  const key = menu.dataset.peKey ?? '';
+  if (menu.dataset.peDefault === 'true') cinnamon.settings.set('groupBall', id);
+  else cinnamon.settings.set('groupBalls', { ...groupBalls(), [key]: id });
+  closeBallMenu(true);
+}
+
+function openBallMenu(anchor: HTMLElement): void {
   closeBallMenu(false);
+  const isDefault = anchor.classList.contains('pe-icon-pick');
   const key = anchor.dataset.peKey ?? '';
-  const current = ballFor(key);
+  const current = isDefault ? groupBall() : ballFor(key);
   const menu = document.createElement('div');
   menu.className = 'pe-ball-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', anchor.getAttribute('aria-label') ?? 'Change ball');
+  menu.setAttribute('role', 'dialog');
+  menu.setAttribute('aria-label', isDefault ? 'Default group icon' : (anchor.getAttribute('aria-label') ?? 'Change icon').replace(/:.*$/, ''));
   menu.dataset.peKey = key;
-  const items = BALLS.map((ball) => {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'pe-ball-item';
-    item.setAttribute('role', 'menuitemradio');
-    item.setAttribute('aria-checked', String(ball === current));
-    item.setAttribute('aria-label', BALL_LABELS[ball]);
-    item.tabIndex = -1;
-    item.dataset.peBall = ball;
-    const art = document.createElement('span');
-    art.style.setProperty('--pe-ball', `var(--pe-ball-${ball})`);
-    item.append(art);
-    menu.append(item);
-    return item;
-  });
+  menu.dataset.peDefault = String(isDefault);
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'pe-icon-search';
+  search.placeholder = 'Search items';
+  search.setAttribute('aria-label', 'Search items');
+  search.autocomplete = 'off';
+  search.spellcheck = false;
+  const list = document.createElement('div');
+  list.className = 'pe-icon-list';
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'Icons');
+  for (const [pocket, title] of POCKETS) {
+    const group = document.createElement('div');
+    group.className = 'pe-icon-group';
+    group.setAttribute('role', 'group');
+    const head = document.createElement('div');
+    head.className = 'pe-icon-head';
+    head.id = `pe-icon-head-${pocket}`;
+    head.textContent = title;
+    group.setAttribute('aria-labelledby', head.id);
+    const grid = document.createElement('div');
+    grid.className = 'pe-icon-grid';
+    for (const [id, name, where] of ITEMS) {
+      if (where !== pocket) continue;
+      const option = document.createElement('div');
+      option.className = 'pe-icon-option';
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-label', name);
+      option.setAttribute('aria-selected', String(id === current));
+      option.tabIndex = -1;
+      option.dataset.peIcon = id;
+      const art = document.createElement('span');
+      art.style.setProperty('--pe-icon', `var(--pe-item-${id})`);
+      option.append(art);
+      grid.append(option);
+    }
+    group.append(head, grid);
+    list.append(group);
+  }
+  const empty = document.createElement('div');
+  empty.className = 'pe-icon-empty';
+  empty.textContent = 'No items match';
+  empty.hidden = true;
+  list.append(empty);
+  const name = document.createElement('div');
+  name.className = 'pe-icon-name';
+  name.setAttribute('aria-hidden', 'true');
+  menu.append(search, list, name);
+  showName(menu, current);
+
+  search.addEventListener('input', guard(() => filterIcons(menu, search.value)));
   menu.addEventListener('click', guard((event: Event) => {
     event.stopPropagation();
-    const item = (event.target as Element).closest<HTMLElement>('.pe-ball-item');
-    if (!item?.dataset.peBall) return;
-    cinnamon.settings.set('groupBalls', { ...groupBalls(), [key]: item.dataset.peBall });
-    closeBallMenu(true);
+    chooseIcon(menu, (event.target as Element).closest<HTMLElement>('.pe-icon-option')?.dataset.peIcon);
   }));
-  menu.addEventListener('keydown', guard((event: Event) => {
-    const key_ = (event as KeyboardEvent).key;
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    const step: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 6, ArrowUp: -6 };
-    if (key_ in step) items[(Math.max(0, at) + step[key_] + items.length) % items.length].focus();
-    else if (key_ === 'Escape' || key_ === 'Tab') closeBallMenu(true);
-    else return;
-    event.preventDefault();
-    event.stopPropagation();
+  menu.addEventListener('pointerover', guard((event: Event) => {
+    const option = (event.target as Element).closest<HTMLElement>('.pe-icon-option');
+    if (option) showName(menu, option.dataset.peIcon);
   }));
-  document.body.append(menu);
+  menu.addEventListener('focusin', guard((event: Event) => {
+    const option = (event.target as Element).closest<HTMLElement>('.pe-icon-option');
+    if (option) showName(menu, option.dataset.peIcon);
+  }));
+
+  // inside a modal dialog the popover joins it, so the dialog keeps focus and clicks
+  const host = anchor.closest('[role="dialog"]') ?? document.body;
+  host.append(menu);
   ballMenu = menu;
   ballAnchor = anchor;
+  placeMenu(menu, anchor);
+  const chosen = menu.querySelector<HTMLElement>('.pe-icon-option[aria-selected="true"]') ?? visibleOptions(menu)[0];
+  focusOption(menu, chosen);
+  schedule();
+}
+
+// below the anchor when it fits, else above, else the taller side; the list scrolls inside the window
+function placeMenu(menu: HTMLElement, anchor: HTMLElement): void {
+  const gap = 4;
   const r = anchor.getBoundingClientRect();
+  const topBar = document.querySelector('.df-titlebar')?.getBoundingClientRect().bottom ?? 0;
+  const roof = topBar + gap;
+  const floor = window.innerHeight - gap;
+  menu.style.maxHeight = `${Math.max(120, floor - roof)}px`;
   const w = menu.offsetWidth;
   const h = menu.offsetHeight;
-  const topBar = document.querySelector('.df-titlebar')?.getBoundingClientRect().bottom ?? 0;
-  const below = r.bottom + 4;
-  const top = below + h <= window.innerHeight - 4 ? below : Math.max(topBar + 4, r.top - 4 - h);
-  const left = Math.min(window.innerWidth - w - 4, Math.max(4, r.left));
+  const below = floor - (r.bottom + gap);
+  const above = r.top - gap - roof;
+  let top: number;
+  if (h <= below) top = r.bottom + gap;
+  else if (h <= above) top = r.top - gap - h;
+  else if (below >= above) {
+    menu.style.maxHeight = `${Math.max(120, below)}px`;
+    top = r.bottom + gap;
+  } else {
+    menu.style.maxHeight = `${Math.max(120, above)}px`;
+    top = r.top - gap - Math.min(h, Math.max(120, above));
+  }
+  const left = Math.min(window.innerWidth - w - gap, Math.max(gap, r.left));
   menu.style.left = `${snap(left)}px`;
-  menu.style.top = `${snap(Math.max(topBar + 4, top))}px`;
-  (items.find((item) => item.getAttribute('aria-checked') === 'true') ?? items[0]).focus();
-  schedule();
+  menu.style.top = `${snap(Math.max(roof, top))}px`;
+  // a transformed host moves position: fixed, so correct by what landed
+  const got = menu.getBoundingClientRect();
+  if (Math.abs(got.left - left) > 0.5 || Math.abs(got.top - Math.max(roof, top)) > 0.5) {
+    menu.style.left = `${snap(left + left - got.left)}px`;
+    menu.style.top = `${snap(Math.max(roof, top) * 2 - got.top)}px`;
+  }
 }
 
 // the ball takes its own pointer and click, so the group neither toggles nor starts a drag
@@ -467,16 +612,73 @@ for (const type of BALL_EVENTS) {
   }, true);
 }
 listen(document, 'click', (event) => {
-  const button = (event.target as Element | null)?.closest?.('.pe-ball-btn') as HTMLButtonElement | null;
+  const button = (event.target as Element | null)?.closest?.('.pe-ball-btn, .pe-icon-pick') as HTMLElement | null;
   if (!button) return;
   event.preventDefault();
   event.stopPropagation();
   if (ballMenu && ballAnchor === button) closeBallMenu(true);
   else openBallMenu(button);
 }, true);
+// nearest visible option in the row above or below, by position, so groups of any width line up
+function stepRow(menu: HTMLElement, from: HTMLElement, down: boolean): HTMLElement | undefined {
+  const at = from.getBoundingClientRect();
+  const rows = visibleOptions(menu).filter((option) => {
+    const box = option.getBoundingClientRect();
+    return down ? box.top > at.top + at.height / 2 : box.bottom < at.bottom - at.height / 2;
+  });
+  if (!rows.length) return undefined;
+  const edge = down ? Math.min(...rows.map((o) => o.getBoundingClientRect().top)) : Math.max(...rows.map((o) => o.getBoundingClientRect().top));
+  const row = rows.filter((o) => Math.abs(o.getBoundingClientRect().top - edge) < 1);
+  const x = at.left + at.width / 2;
+  return row.sort((a, b) => Math.abs(a.getBoundingClientRect().left + at.width / 2 - x) - Math.abs(b.getBoundingClientRect().left + at.width / 2 - x))[0];
+}
+
+function ballMenuKey(event: KeyboardEvent, menu: HTMLElement): void {
+  const search = menu.querySelector<HTMLInputElement>('.pe-icon-search');
+  const options = visibleOptions(menu);
+  const active = document.activeElement as HTMLElement | null;
+  const onOption = !!active?.classList.contains('pe-icon-option');
+  const at = onOption ? options.indexOf(active!) : -1;
+  const key = event.key;
+  if (key === 'Escape') {
+    if (search?.value) {
+      search.value = '';
+      filterIcons(menu, '');
+      search.focus();
+    } else closeBallMenu(true);
+  } else if (key === 'Tab') {
+    if (onOption) search?.focus();
+    else focusOption(menu, menu.querySelector<HTMLElement>('.pe-icon-option[tabindex="0"]:not([hidden])') ?? options[0]);
+  } else if (!onOption) {
+    if (key === 'ArrowDown') focusOption(menu, menu.querySelector<HTMLElement>('.pe-icon-option[tabindex="0"]:not([hidden])') ?? options[0]);
+    else if (key === 'Enter') chooseIcon(menu, options[0]?.dataset.peIcon);
+    else return;
+  } else if (key === 'ArrowRight' || key === 'ArrowLeft') focusOption(menu, options[at + (key === 'ArrowRight' ? 1 : -1)]);
+  else if (key === 'ArrowDown' || key === 'ArrowUp') {
+    const next = stepRow(menu, active!, key === 'ArrowDown');
+    if (next) focusOption(menu, next);
+    else if (key === 'ArrowUp') search?.focus();
+  } else if (key === 'Home' || key === 'End') focusOption(menu, key === 'Home' ? options[0] : options[options.length - 1]);
+  else if (key === 'Enter' || key === ' ') chooseIcon(menu, active!.dataset.peIcon);
+  else if (key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    search?.focus();
+    return;
+  } else return;
+  event.preventDefault();
+}
+// keys on the ball or in its menu stop at the window, before any app handler can toggle or move the group
+for (const type of ['keydown', 'keyup', 'keypress']) {
+  listen(window, type, (event) => {
+    const target = event.target as Element | null;
+    const menu = target?.closest?.('.pe-ball-menu') as HTMLElement | null;
+    if (!menu && !target?.closest?.('.pe-ball-btn')) return;
+    event.stopPropagation();
+    if (menu && type === 'keydown') ballMenuKey(event as KeyboardEvent, menu);
+  }, true);
+}
 listen(document, 'pointerdown', (event) => {
   const target = event.target as Element | null;
-  if (ballMenu && !ballMenu.contains(target) && !target?.closest?.('.pe-ball-btn')) closeBallMenu(false);
+  if (ballMenu && !ballMenu.contains(target) && !target?.closest?.('.pe-ball-btn, .pe-icon-pick')) closeBallMenu(false);
 }, true);
 listen(window, 'blur', () => closeBallMenu(false));
 

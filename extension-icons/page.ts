@@ -25,19 +25,22 @@ const LOGO = [
 ].join(',');
 const LOGO_MAX_PX = 48;
 const CRUSH_ID = 'pi-crush';
-// cell in device pixels (font: one font pixel) and colour levels per channel
+// cell in device pixels (font: device pixels in one font pixel) and colour levels per channel.
+// a 16 px logo is about 12, 9, 7 and 6 cells across at these levels when a font pixel is 3 device pixels
 const CRUSH: Record<string, { cell: (font: number) => number; levels: number }> = {
-  light: { cell: () => 2, levels: 6 },
-  medium: { cell: (font) => font, levels: 5 },
-  heavy: { cell: (font) => font * 2, levels: 4 },
+  light: { cell: (font) => font, levels: 5 },
+  medium: { cell: (font) => font + 1, levels: 4 },
+  heavy: { cell: (font) => font + 2, levels: 3 },
+  max: { cell: (font) => font * 2, levels: 2 },
 };
+const CRUSH_DEFAULT = 'medium';
 const logoPending = new Set<Element>();
 let crushKey = '';
 let crushHost: SVGSVGElement | null = null;
 
 const crushLevel = (): string => {
   const saved = cinnamon.settings.get('logos');
-  return saved === undefined || saved === null ? 'light' : String(saved);
+  return saved === undefined || saved === null ? CRUSH_DEFAULT : String(saved);
 };
 
 // pixelate: keep one device pixel per cell (flood, tile, composite in), then grow it to fill the cell.

@@ -4,12 +4,19 @@
 // window, and no AudioContext exists until a click or key press asks for a sound.
 declare const cinnamon: { onDispose(fn: () => void): void };
 
-type PlayOptions = { window?: 'battle' | 'summary' };
+// pan -1 (left) to 1 (right), as m4aMPlayPanpotControl's -64..63; pitch in semitones, as m4aMPlayPitchControl's
+// 1/256-semitone steps
+type PlayOptions = { window?: string; pan?: number; pitch?: number };
+// windows with a mute toggle in the shared state: battle, summary, and chat (partners' cry on a finished reply)
+const WINDOWS = new Set(['battle', 'summary', 'chat']);
+function windowName(win: unknown, fallback: string): string {
+  return typeof win === 'string' && WINDOWS.has(win) ? win : fallback;
+}
 type PlayRecord = { id: string; window: string; gain: number; at: number; played: boolean; species?: number; ctx?: string };
 
 const pageLib = (window as any).__peaLib;
 const { SOUND_KEY, SOUND_EVENT, readSound, gainFor } = pageLib.state;
-const { renderSong } = pageLib.seq;
+const { renderSong, Renderer, loopCut } = pageLib.seq;
 const { Wave, crySong } = pageLib.ds;
 const RATE = 48000;
 // one CGB volume step; a full-volume square reads ±0.5 before the window gain
@@ -18,10 +25,13 @@ const GLIDE = 0.01;
 const LOG_MAX = 20;
 
 const disposers: (() => void)[] = [];
-const rendered = new Map<string, Float32Array>();
+// a rendered effect or cry; a looping effect (SE_LOW_HEALTH, SE_M_GUST) keeps its intro and one loop body
+type Clip = { samples: Float32Array; loopStart?: number; loopEnd?: number };
+const rendered = new Map<string, Clip>();
 const log: PlayRecord[] = [];
-let data: { tables: any; songs: Record<string, unknown>; cries?: { files: number; keys: Record<string, number>; params: any } } | null = null;
-const cries = new Map<number, Float32Array>();
+const sfxWaves: Record<string, unknown> = {};
+let data: { tables: any; songs: Record<string, unknown>; sfx?: any; cries?: { files: number; keys: Record<string, number>; params: any } } | null = null;
+const cries = new Map<number, Clip>();
 let ctx: AudioContext | null = null;
 const gains = new Map<string, GainNode>();
 const live = new Map<string, AudioBufferSourceNode>();
@@ -58,14 +68,31 @@ function readData(): boolean {
   return true;
 }
 
-function renderOne(id: string): Float32Array | null {
-  let samples = rendered.get(id);
-  if (samples) return samples;
-  const song = data?.songs[id];
+// an effect's samples are decoded from audio-sfx-samples-N.css the first time an effect needs them
+function sfxWave(name: string): unknown {
+  if (sfxWaves[name]) return sfxWaves[name];
+  const raw = readProp('pe-audio-sfx-samples', `--pe-sfx-${name}`);
+  if (!raw) return null;
+  return (sfxWaves[name] = new Wave(Uint8Array.from(atob(raw), (c) => c.charCodeAt(0)), data!.tables.delta));
+}
+
+// pitX in 1/256 semitones; each pitch is its own render
+function renderOne(id: string, pitX = 0): Clip | null {
+  const cacheKey = pitX ? `${id}@${pitX}` : id;
+  let clip = rendered.get(cacheKey);
+  if (clip) return clip;
+  const song: any = data?.songs[id];
   if (!song) return null;
-  samples = renderSong(song, data!.tables, RATE, STEP).samples as Float32Array;
-  rendered.set(id, samples);
-  return samples;
+  const waves: Record<string, unknown> = {};
+  for (const name of song.sn ?? []) waves[name] = sfxWave(name);
+  const sx = data!.sfx ?? {};
+  const r = new Renderer({ ...song, tones: sx.tones, splits: sx.splits, waves: sx.waves, samples: waves, pitX }, data!.tables, RATE, STEP, { loops: 2 });
+  while (!r.step(1000));
+  const res = r.result(true);
+  const cut = res.loops.length >= 2 ? loopCut(res, Math.round(RATE * 0.02)) : null;
+  clip = cut ? { samples: cut.samples, loopStart: cut.loopStart / RATE, loopEnd: cut.loopEnd / RATE } : { samples: res.samples };
+  rendered.set(cacheKey, clip);
+  return clip;
 }
 
 // CSS can land after the page files run, so poll briefly; then render one effect per task
@@ -85,7 +112,8 @@ const ready: Promise<void> = new Promise((resolve, reject) => {
       disposers.push(() => window.clearTimeout(t));
       return;
     }
-    const queue = Object.keys(data!.songs);
+    // the interface sounds render ahead; battle effects render on their first play
+    const queue: string[] = [...(data!.sfx?.interface ?? [])];
     const next = () => {
       if (disposed) return reject(new Error('disposed'));
       const id = queue.shift();
@@ -112,8 +140,16 @@ function windowGain(win: string): GainNode | null {
   return node;
 }
 
+const stateListeners: ((next: any) => void)[] = [];
+const cryListeners: ((win: string, seconds: number) => void)[] = [];
+
 function applyState(next: unknown): void {
   state = next;
+  for (const fn of stateListeners) {
+    try {
+      fn(state);
+    } catch {}
+  }
   if (!ctx) return;
   const now = ctx.currentTime;
   for (const [win, node] of gains) {
@@ -130,9 +166,21 @@ function applyState(next: unknown): void {
   }
 }
 
-function gestureActive(): boolean {
-  const activation = (navigator as any).userActivation;
-  return activation ? !!activation.isActive : true;
+const unlockListeners: (() => void)[] = [];
+
+// any click, key press or touch anywhere in the page creates or resumes the AudioContext, in the capture phase so
+// it runs before the page's own handlers; nothing else ever creates it
+function unlock(): void {
+  if (disposed) return;
+  try {
+    if (!ctx) ctx = new AudioContext({ sampleRate: RATE, latencyHint: 'interactive' });
+    if (ctx.state === 'suspended') void ctx.resume().then(() => unlockListeners.forEach((fn) => fn())).catch(() => {});
+    else unlockListeners.forEach((fn) => fn());
+  } catch {}
+}
+for (const type of ['pointerdown', 'keydown', 'touchstart']) {
+  window.addEventListener(type, unlock, true);
+  disposers.push(() => window.removeEventListener(type, unlock, true));
 }
 
 function record(id: string, win: string, species?: number): PlayRecord {
@@ -142,27 +190,34 @@ function record(id: string, win: string, species?: number): PlayRecord {
   return entry;
 }
 
+// the AudioContext, if a gesture has made one; a suspended one is asked to resume (that works only inside a gesture)
 function context(): AudioContext | null {
-  if (!ctx) {
-    if (!gestureActive()) return null;
-    ctx = new AudioContext({ sampleRate: RATE, latencyHint: 'interactive' });
-  }
-  if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
+  if (ctx?.state === 'suspended') void ctx.resume().catch(() => {});
   return ctx;
 }
 
 function play(id: string, opts: PlayOptions = {}): boolean {
   const key = normalizeId(id);
-  const win = opts.window === 'battle' ? 'battle' : 'summary';
+  const win = windowName(opts.window, 'summary');
   const entry = record(key, win);
   if (disposed || entry.gain <= 0 || !data?.songs[key]) return false;
   try {
     if (!context()) return false;
+    const pitX = Math.round(Math.max(-24, Math.min(24, Number(opts.pitch) || 0)) * 256);
     // a new start of the same effect cuts the last one, as the game's SE player does
-    return (entry.played = start(renderOne(key), win, `${win}:${key}`));
+    return (entry.played = start(renderOne(key, pitX), win, `${win}:${key}`, opts.pan));
   } catch {
     return false;
   }
+}
+
+// m4aSongNumStop: the game stops SE_EXP when the EXP bar is full; the channels go silent at once
+function stop(id: string, opts: PlayOptions = {}): void {
+  const slot = `${windowName(opts.window, 'summary')}:${normalizeId(id)}`;
+  try {
+    live.get(slot)?.stop();
+  } catch {}
+  live.delete(slot);
 }
 
 // national dex number, or a name in any case and punctuation ("Mr. Mime", "nidoran♀")
@@ -183,34 +238,55 @@ function readCry(dex: number): Uint8Array | null {
   return raw ? Uint8Array.from(atob(raw), (c) => c.charCodeAt(0)) : null;
 }
 
-function renderCry(dex: number): Float32Array | null {
-  let samples = cries.get(dex);
-  if (samples) return samples;
+function renderCry(dex: number): Clip | null {
+  let clip = cries.get(dex);
+  if (clip) return clip;
   const bin = data?.cries ? readCry(dex) : null;
   if (!bin) return null;
   const song = crySong(data!.cries!.params, new Wave(bin, data!.tables.delta));
-  samples = renderSong(song, data!.tables, RATE, STEP).samples as Float32Array;
-  cries.set(dex, samples);
-  return samples;
+  clip = { samples: renderSong(song, data!.tables, RATE, STEP).samples as Float32Array };
+  cries.set(dex, clip);
+  return clip;
 }
 
 // PlayCry_ByMode(species, 0, CRY_MODE_NORMAL); a new cry in the same window cuts the one still sounding
 function cry(species: number | string, opts: PlayOptions = {}): boolean {
-  const win = opts.window === 'battle' ? 'battle' : 'summary';
+  const win = windowName(opts.window, 'summary');
   const dex = data ? dexOf(species) : null;
   const entry = record('CRY', win, dex ?? undefined);
   if (disposed || entry.gain <= 0 || !dex) return false;
   try {
     if (!context()) return false;
-    return (entry.played = start(renderCry(dex), win, `${win}:cry`));
+    const clip = renderCry(dex);
+    entry.played = start(clip, win, `${win}:cry`);
+    if (entry.played && clip) for (const fn of cryListeners) fn(win, clip.samples.length / RATE);
+    return entry.played;
   } catch {
     return false;
   }
 }
 
-function start(samples: Float32Array | null, win: string, slot: string): boolean {
+// TrkVolPitSet's pan law for y = -64..63: right (y + 128) / 128, left (127 - y) / 127 of the centre level
+function panNode(out: AudioNode, pan: number): AudioNode {
+  const y = Math.max(-64, Math.min(63, Math.round(pan * 64)));
+  const merger = ctx!.createChannelMerger(2);
+  const left = ctx!.createGain();
+  const right = ctx!.createGain();
+  left.gain.value = (127 - y) / 127;
+  right.gain.value = (y + 128) / 128;
+  left.connect(merger, 0, 0);
+  right.connect(merger, 0, 1);
+  merger.connect(out);
+  const split = ctx!.createGain();
+  split.connect(left);
+  split.connect(right);
+  return split;
+}
+
+function start(clip: Clip | null, win: string, slot: string, pan?: number): boolean {
   const out = windowGain(win);
-  if (!ctx || !samples || !samples.length || !out) return false;
+  const samples = clip?.samples;
+  if (!ctx || !clip || !samples || !samples.length || !out) return false;
   const buffer = ctx.createBuffer(1, samples.length, RATE);
   buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
   try {
@@ -218,7 +294,12 @@ function start(samples: Float32Array | null, win: string, slot: string): boolean
   } catch {}
   const source = ctx.createBufferSource();
   source.buffer = buffer;
-  source.connect(out);
+  if (clip.loopEnd) {
+    source.loop = true;
+    source.loopStart = clip.loopStart ?? 0;
+    source.loopEnd = clip.loopEnd;
+  }
+  source.connect(typeof pan === 'number' && Number.isFinite(pan) && pan !== 0 ? panNode(out, pan) : out);
   source.onended = () => {
     if (live.get(slot) === source) live.delete(slot);
     source.disconnect();
@@ -238,8 +319,15 @@ listen(window, 'storage', (event: StorageEvent) => {
 const api = {
   ready,
   play,
+  stop,
   cry,
   ids: () => Object.keys(data?.songs ?? {}),
+  // every effect with what plays it: Showdown gen3 random battle moves, status animations, other battle events
+  sfxList: () =>
+    Object.keys(data?.songs ?? {}).map((id) => {
+      const use = data?.sfx?.uses?.[id];
+      return { id, moves: [...(use?.moves ?? [])], status: [...(use?.status ?? [])], battle: !!use?.battle, interface: (data?.sfx?.interface ?? []).includes(id) };
+    }),
   // the gain a play() for this window uses right now: master volume, or 0 while muted
   gain: (win: string) => gainFor(state, win),
   // the live GainNode value, null before the first sound
@@ -247,13 +335,40 @@ const api = {
   contextState: () => (ctx ? `${ctx.state} t=${ctx.currentTime.toFixed(3)} rate=${ctx.sampleRate}` : 'none'),
   log,
   // QA: the rendered samples for one effect, so a page check can compare them with an offline render
-  samples: (id: string) => renderOne(normalizeId(id)),
+  samples: (id: string) => renderOne(normalizeId(id))?.samples ?? null,
   crySamples: (species: number | string) => {
     const dex = dexOf(species);
-    return dex ? renderCry(dex) : null;
+    return dex ? (renderCry(dex)?.samples ?? null) : null;
   },
 };
 (window as any).__peAudio = api;
+
+// for music.ts, which adds music() and stopMusic() to the same API
+function readProp(className: string, prop: string): string {
+  const probe = document.createElement('div');
+  probe.className = className;
+  probe.hidden = true;
+  document.documentElement.append(probe);
+  const raw = getComputedStyle(probe).getPropertyValue(prop).trim().replace(/^["']|["']$/g, '');
+  probe.remove();
+  return raw;
+}
+pageLib.core = {
+  api,
+  ready,
+  context,
+  current: () => ctx,
+  windowGain,
+  gain: (win: string) => gainFor(state, win),
+  windowName,
+  onState: (fn: (next: any) => void) => stateListeners.push(fn),
+  onCry: (fn: (win: string, seconds: number) => void) => cryListeners.push(fn),
+  onUnlock: (fn: () => void) => unlockListeners.push(fn),
+  data: () => data,
+  readProp,
+  listen,
+  isDisposed: () => disposed,
+};
 
 cinnamon.onDispose(() => {
   disposed = true;

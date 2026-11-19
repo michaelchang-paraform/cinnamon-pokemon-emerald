@@ -33,8 +33,9 @@ class Wave {
 
   // SoundMainRAM_Unk2: decode the 64-sample block holding `pos` into the one-block buffer
   at(pos: number): number {
+    // the mixer's interpolation reads one sample past the end; PCM data keeps its padding bytes for that
+    if (!this.compressed) return pos >= 0 && pos < this.data.length ? (this.data[pos] << 24) >> 24 : 0;
     if (pos < 0 || pos >= this.size) return 0;
-    if (!this.compressed) return (this.data[pos] << 24) >> 24;
     const block = pos >> 6;
     if (block !== this.block) {
       this.block = block;
@@ -92,11 +93,41 @@ type DsChan = {
   loop: boolean;
 };
 
-// one frame of SoundMainRAM for every DirectSound channel: envelope, then 224 mixed samples into the two 8-bit
-// buffers (byte lanes wrap, as the ARM loop's adds do); returns the mono sum per sample, -256..254
-function dsFrame(chans: DsChan[], out: Float32Array): void {
-  const right = new Int8Array(DS_SAMPLES);
-  const left = new Int8Array(DS_SAMPLES);
+// SoundMainRAM keeps 7 frames of output in its DMA ring; with reverb on, a frame starts from frames n-7 and n-6
+const RING = 7;
+class DsMixer {
+  private readonly right = Array.from({ length: RING }, () => new Int8Array(DS_SAMPLES));
+  private readonly left = Array.from({ length: RING }, () => new Int8Array(DS_SAMPLES));
+  private slot = 0;
+
+  // `reverb` is SoundInfo.reverb, the low 7 bits of a song header's reverb byte when its 0x80 bit is set
+  constructor(readonly reverb: number) {}
+
+  frame(chans: DsChan[], out: Float32Array): void {
+    const right = this.right[this.slot];
+    const left = this.left[this.slot];
+    const next = (this.slot + 1) % RING;
+    if (this.reverb) {
+      const r6 = this.right[next];
+      const l6 = this.left[next];
+      for (let i = 0; i < DS_SAMPLES; i++) {
+        let v = ((right[i] + left[i] + r6[i] + l6[i]) * this.reverb) >> 9;
+        if (v & 0x80) v += 1;
+        right[i] = left[i] = v;
+      }
+    } else {
+      right.fill(0);
+      left.fill(0);
+    }
+    dsFrame(chans, right, left);
+    for (let i = 0; i < DS_SAMPLES; i++) out[i] = right[i] + left[i];
+    this.slot = next;
+  }
+}
+
+// one frame of SoundMainRAM for every DirectSound channel: envelope, then 224 samples mixed into the two 8-bit
+// buffers (byte lanes wrap, as the ARM loop's adds do)
+function dsFrame(chans: DsChan[], right: Int8Array, left: Int8Array): void {
   for (const c of chans) {
     if (!(c.sf & 0xc7) || !c.wave) continue;
     let r5: number;
@@ -180,7 +211,6 @@ function dsFrame(chans: DsChan[], out: Float32Array): void {
       s1 = wave.at(c.pos + 1);
     }
   }
-  for (let i = 0; i < DS_SAMPLES; i++) out[i] = right[i] + left[i];
 }
 
 // gPokemonCrySongTemplate from offset 0x11 (part0) after SetPokemonCryVolume/Panpot/Pitch/Length/Progress/Release
@@ -202,4 +232,4 @@ function crySong(p: CryParams, wave: Wave): { p: number; r: number; t: number[];
   return { p: p.priority, r: 0, t: [0], bytes, v: { 0: p.tone }, w: { 0: wave } };
 }
 
-dsLib.ds = { Wave, midiKeyToFreq, dsFrame, crySong, DS_SAMPLES };
+dsLib.ds = { Wave, midiKeyToFreq, DsMixer, crySong, DS_SAMPLES };

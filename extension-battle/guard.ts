@@ -1,4 +1,4 @@
-declare const cinnamon: { onDispose(fn: () => void): void };
+declare const cinnamon: { onDispose(fn: () => void): void; settings: { set(key: string, value: unknown): void } };
 type Rect = { x: number; y: number; w: number; h: number };
 type Run = { kind: 'text' | 'cursor'; label: string; ink: Rect; clip: Rect | null; node: Element };
 type Frame = { rect: Rect; node: Element };
@@ -146,13 +146,87 @@ const WIDE = 'MMMMMMMMMMMMMMMMMM';
 const LONG_MOVES = ['Dynamic Punch', 'Extreme Speed', 'Smelling Salts', 'Dragon Breath'];
 const LONG_MONS = ['Charmeleon', 'Butterfree', 'Masquerain', 'Crawdaunt', 'Ludicolo', 'Sharpedo'];
 
+type Glyph = { run: number; ch: string; font: 'normal' | 'small' | 'narrow'; x: number; code: number; w: number; h: number };
+
+// every glyph sits on a whole game pixel and copies exactly the tile columns the game copies (text.c DecompressGlyph_*)
+function glyphFindings(log: Glyph[]): Finding[] {
+  const out: Finding[] = [];
+  const seen = new Set<string>();
+  const runs = new Map<number, Glyph[]>();
+  for (const g of log) runs.set(g.run, [...(runs.get(g.run) ?? []), g]);
+  for (const glyphs of runs.values()) {
+    const text = glyphs.map((g) => g.ch).join('');
+    for (const [i, g] of glyphs.entries()) {
+      const want = { w: ns.assets.data?.fonts[g.font]?.w[g.code] ?? 6, h: g.font === 'small' ? 13 : 15 };
+      const issue = !Number.isInteger(g.x) ? 'glyph off pixel grid' : g.w !== want.w || g.h !== want.h ? 'glyph span differs from game' : '';
+      if (!issue) continue;
+      const key = `${issue}|${g.font}|${g.ch}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ state: 'glyphs', issue, a: `${g.font} '${g.ch}' at ${i} in "${text.slice(0, 30)}"`, b: `x ${g.x}, span ${g.w}x${g.h}, game ${want.w}x${want.h}` });
+    }
+  }
+  return out;
+}
+
+// renders each string through the real text path and compares every glyph to the font bitmap, column for column
+function pixelAudit(items: Array<[string, 'normal' | 'small' | 'narrow']>): { glyphs: number; mismatches: number; examples: string[] } {
+  const assets = ns.assets;
+  let glyphs = 0;
+  let mismatches = 0;
+  const examples: string[] = [];
+  for (const [text, font] of items) {
+    const canvas = assets.text(text, { font, color: 'std' });
+    const got = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    const mask = assets.fontMasks.get(font);
+    const widths = assets.data.fonts[font].w;
+    const rows = font === 'small' ? 13 : 15;
+    let x = 0;
+    for (const ch of text) {
+      if (ch === ' ' || ch === '~') {
+        x += ch === ' ' ? widths[0] ?? 3 : 6;
+        continue;
+      }
+      const code = assets.code(ch);
+      const adv = widths[code] ?? 6;
+      glyphs++;
+      let bad = false;
+      for (let y = 0; y < Math.min(rows, canvas.height) && !bad; y++)
+        for (let c = 0; c < adv && x + c < canvas.width; c++) {
+          const want = mask.data[(((code >> 4) * 16 + y) * mask.width + (code % 16) * 16 + c) * 4 + 3] > 0;
+          const have = got[(y * canvas.width + x + c) * 4 + 3] > 0;
+          if (want !== have) {
+            bad = true;
+            break;
+          }
+        }
+      if (bad) {
+        mismatches++;
+        if (examples.length < 12) examples.push(`${font} '${ch}' in "${text}"`);
+      }
+      x += adv;
+    }
+  }
+  return { glyphs, mismatches, examples };
+}
+
 async function walk(app: any, stopAt = ''): Promise<{ states: number; runs: number; findings: Finding[]; stopped: boolean }> {
   const findings: Finding[] = [];
+  const glyphLog: Glyph[] = [];
+  ns.glyphLog = glyphLog;
+  const finish = <T,>(result: T): T => {
+    ns.glyphLog = undefined;
+    findings.push(...glyphFindings(glyphLog));
+    return result;
+  };
   let states = 0;
   let runs = 0;
   const frame = () => new Promise((r) => setTimeout(r, 0));
+  const errorsBefore = ns.debugLog.errors.length;
   const visit = async (name: string): Promise<boolean> => {
     await frame();
+    ns.forceDots?.(3);
+    if (ns.debugLog.errors.length > errorsBefore) findings.push({ state: name, issue: 'render error', a: String(ns.debugLog.errors.at(-1)).slice(0, 120), b: '' });
     states++;
     (window as any).__names?.push(name);
     runs += check(name, app.screenEl, findings);
@@ -183,29 +257,87 @@ async function walk(app: any, stopAt = ''): Promise<{ states: number; runs: numb
     for (let i = 0; i < 4; i++) {
       battle.actionIndex = i;
       battle.renderActions();
-      if (await visit(`battle/actions/row${i}`)) return { states, runs, findings, stopped: true };
+      if (await visit(`battle/actions/row${i}`)) return finish({ states, runs, findings, stopped: true });
     }
     battle.openFight();
     for (let i = 0; i < 4; i++) {
       battle.moveIndex = i;
       battle.renderFight();
-      if (await visit(`battle/fight/row${i}`)) return { states, runs, findings, stopped: true };
+      if (await visit(`battle/fight/row${i}`)) return finish({ states, runs, findings, stopped: true });
     }
+    req.active[0].moves = ['Steel Wing', 'Hidden Power', 'Silver Wind', 'Swords Dance'].map((move, i) => ({ move, id: move.toLowerCase().replace(/\W/g, ''), pp: 40 - i, maxpp: 40, disabled: false }));
+    battle.openFight();
+    for (let i = 0; i < 4; i++) {
+      battle.moveIndex = i;
+      battle.renderFight();
+      if (await visit(`battle/fight-steel/row${i}`)) return finish({ states, runs, findings, stopped: true });
+    }
+    const windows = [[16, 120, 64, 16], [88, 120, 64, 16], [16, 136, 64, 16], [88, 136, 64, 16], [168, 120, 32, 16], [200, 120, 32, 16], [168, 136, 64, 16]];
+    const sr = app.screenEl.getBoundingClientRect();
+    const u = sr.width / 240;
+    const names: string[] = (window as any).__gameNames?.moves ?? [];
+    const typeIds = new Map<number, string>();
+    for (const [id, t] of Object.entries(ns.assets.data?.moves ?? {})) if (!typeIds.has(t as number)) typeIds.set(t as number, id);
+    const ids = [...typeIds.values()];
+    let outside = 0;
+    for (let start = 0; start < Math.max(names.length, ids.length * 4); start += 4) {
+      const set = [0, 1, 2, 3].map((i) => names[(start + i) % Math.max(1, names.length)] ?? 'TACKLE');
+      req.active[0].moves = set.map((move, i) => ({ move, id: ids[(start / 4 + i) % ids.length], pp: 8, maxpp: 40, disabled: false }));
+      battle.openFight();
+      for (let i = 0; i < 4; i++) {
+        battle.moveIndex = i;
+        battle.renderFight();
+        for (const canvas of battle.menuLayer.querySelectorAll('canvas.pkb-t')) {
+          const r = canvas.getBoundingClientRect();
+          const x = (r.left - sr.left) / u;
+          const y = (r.top - sr.top) / u;
+          const w = canvas.width;
+          const home = windows.find(([wx, wy, ww, wh]) => x >= wx - 0.01 && y >= wy - 1.01 && x + w <= wx + ww + 0.01 && y < wy + wh);
+          if (!home && outside++ < 6) findings.push({ state: 'battle/fight-all', issue: 'text outside game window', a: `"${canvas.dataset.text}" x ${x.toFixed(1)} w ${w}`, b: set.join(', ') });
+        }
+      }
+    }
+    states += 1;
     battle.openConfirm();
     for (let i = 0; i < 2; i++) {
       battle.confirmIndex = i;
       battle.renderConfirm();
-      if (await visit(`battle/confirm/row${i}`)) return { states, runs, findings, stopped: true };
+      if (await visit(`battle/confirm/row${i}`)) return finish({ states, runs, findings, stopped: true });
     }
     battle.openParty(false);
     const slots = Math.min(6, battle.team?.length ?? 0);
     for (let i = 0; i <= slots; i++) {
       battle.partyIndex = i;
       battle.renderParty();
-      if (await visit(`battle/party/row${i}`)) return { states, runs, findings, stopped: true };
+      if (await visit(`battle/party/row${i}`)) return finish({ states, runs, findings, stopped: true });
+    }
+    battle.closeMenus();
+    battle.menuState = 'wait';
+    battle.thinking(true);
+    if (await visit('battle/thinking/row0')) return finish({ states, runs, findings, stopped: true });
+    battle.fallback();
+    if (await visit('battle/fallback/row0')) return finish({ states, runs, findings, stopped: true });
+    battle.thinking(false);
+    const boxes = battle.boxes;
+    for (const status of ['slp', 'psn', 'brn', 'par', 'frz', 'tox', '']) {
+      for (const key of ['me', 'foe']) {
+        const mon = battle.sides[key === 'me' ? battle.mySide : battle.foeSide].active;
+        if (mon) mon.status = status;
+        battle.renderBox(key);
+      }
+      // foe bar frame end sits at x 37-39 of the label slot, the player keeps its HP label there
+      const cap = document.createElement('canvas');
+      cap.width = 8;
+      cap.height = 8;
+      const end = ns.assets.image(status ? 'hbFrameEnd' : 'hpbar');
+      if (end) cap.getContext('2d')!.drawImage(end, status ? 0 : 8, 0, 8, 8, 0, 0, 8, 8);
+      const want = [...cap.getContext('2d')!.getImageData(6, 3, 1, 1).data].join();
+      const got = [...boxes.foe.getContext('2d').getImageData(status ? 38 : 30, 19, 1, 1).data].join();
+      if (end && want !== got) findings.push({ state: `battle/status-${status || 'none'}`, issue: 'hp bar cap missing', a: `foe pixel ${got}`, b: `want ${want}` });
+      if (await visit(`battle/status-${status || 'none'}/row0`)) return finish({ states, runs, findings, stopped: true });
     }
     battle.openActions();
-    return { states, runs, findings, stopped: false };
+    return finish({ states, runs, findings, stopped: false });
   }
   const looks = [{ cls: 'may', palette: [null, '#e05050', null] }, undefined, { cls: 5 }, { cls: 'nope' }, { cls: 'twins', palette: ['#40a0f0'] }];
   const peers = [1, 2, 3, 4, 5].map((n) => ({ id: `g${n}`, name: WIDE.slice(n - 1), status: n % 2 ? 'looking' : 'idle', address: '192.168.100.100:41852', source: 'mdns', trainer: looks[n - 1] }));
@@ -213,17 +345,25 @@ async function walk(app: any, stopAt = ''): Promise<{ states: number; runs: numb
     ['offline', () => { app.link.conn = 'offline'; app.prompt = null; app.screen = 'offline'; }],
     ['lobby', () => { app.link.conn = 'online'; app.welcomed = true; app.trainer = { id: 'me', name: WIDE }; app.peers = peers; app.screen = 'lobby'; app.lobbyFocus = 'menu'; }],
     ['lobby-peers', () => { app.lobbyFocus = 'peers'; }],
-    ['incoming', () => { app.lobbyFocus = 'menu'; app.prompt = { kind: 'incoming', challenge: { challengeId: 'g', from: { id: 'g1', name: WIDE }, expiresAt: Date.now() + 60000 } }; }],
+    ['lobby-waiting', () => { app.lobbyFocus = 'menu'; app.peers = []; app.looking = true; app.notice = ''; }],
+    ['lobby-searching', () => { app.setNotice(`Looking for trainers${ns.WAIT}`); app.peers = peers; }],
+    ['lobby-foe', () => { app.notice = ''; app.panel = 'foe'; app.lobbyFocus = 'peers'; app.claude = { available: true, reason: '', models: ['haiku', 'sonnet', 'opus', 'fable'], defaultModel: 'haiku' }; }],
+    ['lobby-foe-off', () => { app.claude = ns.parseClaude(null); }],
+    ['lobby-options', () => { app.panel = 'options'; app.panelIndex = 0; app.lobbyFocus = 'peers'; }],
+    ['lobby-music', () => { app.panel = 'music'; app.panelIndex = 0; }],
+    ['lobby-bgm', () => { app.panel = null; app.lobbyFocus = 'menu'; const list = ns.trackList(); app.music.setPick(list[list.length - 1]); app.music.sync(app); }],
+    ['incoming', () => { app.music.setPick(null); app.panel = null; app.lobbyFocus = 'menu'; app.prompt = { kind: 'incoming', challenge: { challengeId: 'g', from: { id: 'g1', name: WIDE }, expiresAt: Date.now() + 60000 } }; }],
     ['outgoing', () => { app.outgoing = { challengeId: 'g', peer: { id: 'g1', name: WIDE } }; app.prompt = { kind: 'outgoing' }; }],
     ['result', () => { app.prompt = null; app.outgoing = null; app.result = { result: 'loss', reason: 'You forfeited.', turns: 188, mode: 'lan', opponent: WIDE, peerId: 'g1', difficulty: 'normal' }; app.screen = 'result'; }],
+    ['result-claude', () => { cinnamon.settings.set('showClaudeStats', true); app.result = { ...app.result, opponent: 'CLAUDE', kind: 'claude', model: 'sonnet', stats: ns.claudeStats({ costUsd: 0.123456, decisions: 188, handedOver: true }), look: ns.CLAUDE_LOOK }; }],
   ];
   for (const [name, setup] of scenes) {
     setup();
     app.render();
-    if (await walkMenus(name)) return { states, runs, findings, stopped: true };
+    if (await walkMenus(name)) return finish({ states, runs, findings, stopped: true });
   }
-  return { states, runs, findings, stopped: false };
+  return finish({ states, runs, findings, stopped: false });
 }
 
-ns.guard = { walk, check: (state: string) => { const out: Finding[] = []; check(state, ns.app.screenEl, out); return out; } };
+ns.guard = { walk, pixelAudit, check: (state: string) => { const out: Finding[] = []; check(state, ns.app.screenEl, out); return out; } };
 cinnamon.onDispose(() => delete ns.guard);

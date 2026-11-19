@@ -66,50 +66,126 @@
   content: none !important;
 }
 
-/* the group's ball: a button holding Emerald's closed ball sprite (12x12) at the text scale, 2 font pixels clear each side */
+/* the group's ball: a button holding Emerald's closed ball sprite (12x12) one font pixel step above the text scale, 2 font pixels clear each side */
 .pe-ball-btn {
   all: unset;
   flex: none;
   align-self: center;
   box-sizing: border-box;
-  width: calc(var(--pe-px, 1.375px) * 12);
-  height: calc(var(--pe-px, 1.375px) * 12);
+  width: calc(var(--pe-px-h1, 1.833px) * 12);
+  height: calc(var(--pe-px-h1, 1.833px) * 12);
   margin-inline: calc(var(--pe-px, 1.375px) * 2);
   background: var(--pe-ball, var(--pe-ball-poke)) no-repeat 0 0 / 100% 100%;
   image-rendering: pixelated;
   cursor: pointer;
+}
+.pe-ball-btn[data-pe-item] {
+  background-size: calc(var(--pe-head-item-px, 1px) * 24) calc(var(--pe-head-item-px, 1px) * 24);
+  background-position: center;
+}
+.pe-icon-pick > span[data-pe-item] {
+  background-size: calc(var(--pe-item-px, 1px) * 24) calc(var(--pe-item-px, 1px) * 24);
+  background-position: center;
 }
 .pe-ball-btn:focus-visible {
   outline: var(--pe-bpx, 1.375px) solid var(--pe-strong);
   outline-offset: var(--pe-px, 1.375px);
 }
 .pe-ball-menu {
+  --pe-cell: calc(var(--pe-px, 1.375px) * 30);
   position: fixed;
   z-index: 2147483300;
-  display: grid;
-  grid-template-columns: repeat(6, auto);
-  gap: calc(var(--pe-px, 1.375px) * 2);
-  padding: calc(var(--pe-px, 1.375px) * 2);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--pe-px, 1.375px) * 3);
+  box-sizing: border-box;
+  width: calc(var(--pe-cell) * 8 + var(--pe-px, 1.375px) * 30);
+  max-width: calc(100vw - 8px);
+  padding: calc(var(--pe-px, 1.375px) * 3);
+  pointer-events: auto;
 }
-.pe-ball-item {
+.pe-icon-search {
   all: unset;
   box-sizing: border-box;
+  flex: none;
+  width: 100%;
+  padding: calc(var(--pe-px, 1.375px) * 2) calc(var(--pe-px, 1.375px) * 4);
+  border: var(--pe-bpx, 1.375px) solid var(--pe-rule);
+  color: inherit;
+  cursor: text;
+}
+.pe-icon-search:focus {
+  border-color: var(--pe-strong);
+}
+.pe-icon-search::placeholder {
+  color: var(--cds-text-secondary);
+}
+.pe-icon-list {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-inline-end: calc(var(--pe-px, 1.375px) * 2);
+}
+.pe-icon-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: calc(var(--pe-px, 1.375px) * 2) 0;
+  background: var(--pe-menu-fill, #26323e);
+  color: var(--pe-strong);
+}
+.pe-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, var(--pe-cell));
+  margin-bottom: calc(var(--pe-px, 1.375px) * 2);
+}
+.pe-icon-option {
+  box-sizing: border-box;
+  width: var(--pe-cell);
+  height: var(--pe-cell);
   padding: calc(var(--pe-px, 1.375px) * 2);
   border: var(--pe-bpx, 1.375px) solid transparent;
   cursor: pointer;
+  outline: none;
 }
-.pe-ball-item:is(:hover, :focus-visible) {
-  background: var(--pe-menu-hover);
+.pe-icon-option[hidden], .pe-icon-group[hidden], .pe-icon-empty[hidden] {
+  display: none;
 }
-.pe-ball-item[aria-checked="true"] {
+/* rest: clear; hover: fill behind the sprite; keyboard focus: inner frame; selected: yellow frame; the box never changes size */
+.pe-icon-option:not(#_) {
+  background-color: transparent !important;
+}
+.pe-icon-option:hover:not(#_) {
+  background-color: var(--pe-menu-hover) !important;
+}
+.pe-icon-option:focus-visible {
+  outline: var(--pe-bpx, 1.375px) solid var(--pe-rule);
+  outline-offset: calc(var(--pe-bpx, 1.375px) * -2);
+}
+.pe-icon-option[aria-selected="true"] {
   border-color: var(--pe-strong);
 }
-.pe-ball-item > span {
+.pe-icon-option > span {
   display: block;
-  width: calc(var(--pe-px, 1.375px) * 12);
-  height: calc(var(--pe-px, 1.375px) * 12);
-  background: var(--pe-ball) no-repeat 0 0 / 100% 100%;
+  width: calc(var(--pe-px, 1.375px) * 24);
+  height: calc(var(--pe-px, 1.375px) * 24);
+  background: var(--pe-icon) no-repeat 0 0 / 100% 100%;
   image-rendering: pixelated;
+}
+.pe-icon-empty {
+  padding: calc(var(--pe-px, 1.375px) * 4) 0;
+  color: var(--cds-text-secondary);
+}
+.pe-icon-name {
+  flex: none;
+  min-height: var(--pe-lh-line, 1lh);
+  border-top: var(--pe-bpx, 1.375px) solid var(--pe-rule);
+  padding-top: calc(var(--pe-px, 1.375px) * 2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 [data-testid="sidebar"] h3:not(.sr-only) [data-group-toggle] {
   gap: calc(var(--pe-px, 1.375px) * 2) !important;
@@ -246,6 +322,45 @@
 [data-cds="TurnStatus"] button [data-cds="Icon"] { --pe-icon-mask: var(--pe-mask-chevron-right); --pe-icon-w: 3; --pe-icon-h: 5; }
 [data-testid="sidebar"] [data-row-key^="code:session_"] [data-row-decoration] [data-cds="Icon"] { --pe-icon-mask: var(--pe-mask-cloud); --pe-icon-w: 9; --pe-icon-h: 6; }
 
+/* Settings > Appearance rows from Cinnamon and the Pokemon extensions: rows grow, controls drop below the text when short of room */
+:is([data-cm-theme-row], [data-cm-ext-row], [data-pkb-row], [data-pkp-settings], [data-pe-settings])[data-settings-row] {
+  flex-wrap: wrap;
+  row-gap: calc(var(--pe-px, 1.375px) * 6);
+  height: auto;
+}
+:is([data-cm-theme-row], [data-cm-ext-row], [data-pkb-row], [data-pkp-settings], [data-pe-settings])[data-settings-row] > :not([data-settings-control]) {
+  flex: 1 1 calc(var(--pe-px, 1.375px) * 160);
+  min-width: min(100%, calc(var(--pe-px, 1.375px) * 120));
+}
+:is([data-cm-theme-row], [data-cm-ext-row], [data-pkb-row], [data-pkp-settings], [data-pe-settings])[data-settings-row] > [data-settings-control] {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+[data-pkb-row][data-settings-row] [data-settings-control] > * {
+  flex-wrap: wrap;
+}
+[data-pkb-row][data-settings-row] [data-settings-control] > * > * {
+  white-space: nowrap;
+}
+:is([data-cm-theme-row], [data-cm-ext-row])[data-settings-row] .cm-badge {
+  height: auto;
+  padding: 0 calc(var(--pe-px, 1.375px) * 3);
+  border-radius: 0;
+}
+/* rows cloned from the Extensions row inherit its Cinnamon badge as their description slot */
+:is([data-pkb-row], [data-pkp-settings], [data-pe-settings])[data-settings-row] .cm-badge {
+  display: block;
+  height: auto;
+  margin: calc(var(--pe-px, 1.375px) * 2) 0 0;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--cds-text-secondary);
+  white-space: normal;
+  overflow-wrap: break-word;
+  vertical-align: baseline;
+}
 [data-pe-settings] .pe-size {
   display: flex;
   gap: calc(var(--pe-px, 1.375px) * 2);
@@ -261,19 +376,17 @@
   background: var(--pe-menu-hover);
   border-color: var(--pe-strong);
 }
-[data-pe-settings] .pe-size-option.pe-ball-option {
-  padding: calc(var(--pe-px, 1.375px) * 2);
+[data-pe-settings] .pe-icon-pick {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--pe-px, 1.375px) * 3);
 }
-.pe-ball-option > span {
-  display: block;
+.pe-icon-pick > span:first-child {
+  flex: none;
   width: calc(var(--pe-px, 1.375px) * 12);
   height: calc(var(--pe-px, 1.375px) * 12);
   background: var(--pe-ball) no-repeat 0 0 / 100% 100%;
   image-rendering: pixelated;
-}
-[data-pe-settings] .pe-size:has(.pe-ball-option) {
-  display: grid;
-  grid-template-columns: repeat(6, auto);
 }
 
 @keyframes pe-blink {

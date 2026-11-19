@@ -4,6 +4,8 @@ declare const cinnamon: { settings: { get(key: string): unknown; set(key: string
 const Q = (window as any).__pkp;
 
 const TARGETS = '.pkp-ri, .pkp-ht, .pkp-av';
+// the header thumb opens the summary on click but shows no card: it would cover the title and the first row
+const HOVER_TARGETS = '.pkp-ri, .pkp-av';
 const PAGES = ['POKéMON INFO', 'POKéMON SKILLS', 'BATTLE MOVES'];
 const OPEN_CRY_MS = (22 * 1000) / 59.7275;
 const FEMALE_TRAINERS = ['may', 'lass', 'hex_maniac'];
@@ -110,7 +112,8 @@ class Tooltip {
   private node: HTMLElement | null = null;
   pinnedUntil = 0;
 
-  show(target: Element): void {
+  // view: the level and bar pixels to draw instead of the live ones, for the level-up moment
+  show(target: Element, view?: { level: number; px: number }): void {
     const key = keyOf(target);
     const mon = key ? Q.mon(key) : null;
     const hb = Q.assets.dex?.hb;
@@ -131,7 +134,7 @@ class Tooltip {
     if (mon.gender && !((mon.species === 29 || mon.species === 32) && mon.nickname === mon.name)) {
       hbText(node, mon.gender === 'M' ? '♂' : '♀', 16 + nameWidth, 3, mon.gender === 'M' ? hb.male : hb.female, hb.shadow);
     }
-    const lv = String(mon.level);
+    const lv = String(view?.level ?? mon.level);
     hbText(node, `\u0001${lv}`, 72 + 5 * (3 - lv.length), 3, hb.ink, hb.shadow);
     const hp = Q.el('div', 'pkp-hb-hp');
     hp.style.backgroundImage = `url("${Q.assets.ui('hb-hp')}")`;
@@ -140,8 +143,7 @@ class Tooltip {
     hbText(node, `${pad(mon.stats[0])}/`, 60, 21, hb.ink, hb.shadow, { rows: 11 });
     hbText(node, pad(mon.stats[0]), 80, 21, hb.ink, hb.shadow, { rows: 11 });
     const exp = Q.el('div', 'pkp-hb-exp');
-    const span = Math.max(1, mon.expNext - mon.expThis);
-    exp.style.setProperty('--fill', String(Math.min(1, Math.max(0, (mon.exp - mon.expThis) / span))));
+    exp.style.setProperty('--fill', String((view?.px ?? Q.expPixels(mon)) / 64));
     exp.style.setProperty('--exp', `#${hb.exp}`);
     node.append(exp);
     if (!node.isConnected) document.body.append(node);
@@ -149,18 +151,25 @@ class Tooltip {
     node.style.visibility = '';
   }
 
-  // right of the sprite and centred on it; left only when the right side has no room
+  // the healthbox tail sits on the sprite's vertical centre, so the card rises above it; right of the sprite with a
+  // 6 px gap, flipped left only when it would not fit, below only at the very top
   private place(node: HTMLElement, target: Element): void {
     const r = target.getBoundingClientRect();
-    const w = node.offsetWidth;
-    const h = node.offsetHeight;
+    const box = node.getBoundingClientRect();
+    const w = box.width;
+    const h = box.height;
     const gap = 6;
+    const scroller = target.closest('[data-testid="epitaxy-virtual-transcript"], [data-testid="sidebar"]')?.getBoundingClientRect();
+    const ceiling = Math.max(4, scroller ? scroller.top : 4);
     const x = r.right + gap + w <= window.innerWidth - 4 ? r.right + gap : r.left - gap - w;
-    const pick = [x, r.top + r.height / 2 - h / 2];
-    const dot = 1 / (window.devicePixelRatio || 1);
-    const snap = (v: number) => Math.round(v / dot) * dot;
-    node.style.left = `${snap(Math.min(window.innerWidth - w - 4, Math.max(4, pick[0])))}px`;
-    node.style.top = `${snap(Math.min(window.innerHeight - h - 4, Math.max(4, pick[1])))}px`;
+    // the sprite's own box, never its row: a three-line card's middle sits below the sprite
+    const mid = r.top + r.height / 2;
+    const y = mid - h >= ceiling ? mid - h : mid;
+    const dpr = window.devicePixelRatio || 1;
+    const snap = (v: number) => Math.round(v * dpr) / dpr;
+    node.style.left = `${snap(Math.max(4, x))}px`;
+    node.style.top = `${snap(Math.min(window.innerHeight - h - 4, y))}px`;
+    node.dataset.anchor = y === mid ? 'below' : 'above';
   }
 
   hide(force = false): void {
@@ -203,6 +212,7 @@ const SELECT_INNER = 'ffff00';
 type Color = [string, string];
 
 class Summary {
+  expShown: { exp: number; next: number; px: number } | null = null;
   node: HTMLElement | null = null;
   screen: any = null;
   key: string | null = null;
@@ -277,7 +287,7 @@ class Summary {
     mute.toggleAttribute('data-muted', !!win.muted);
     mute.addEventListener('click', Q.guard(() => {
       Q.sound.setMuted('summary', !Q.sound.read().windows.summary?.muted);
-      Q.blip();
+      Q.sfx('SE_SELECT');
     }));
     box.append(mute);
   }
@@ -471,6 +481,15 @@ class Summary {
   // the summary's front animation: anim_front's two frames on the species' sAnim timings (1/60 s each), with the
   // cry (pokemon_summary_screen.c SpriteCB_Pokemon: PlayMonCry, then the animation). Reduced motion swaps to the
   // second frame once for the same span instead of flipping
+  // the shiny sparkle centred on the 64x64 picture at (8, 32), at the screen's own pixel scale
+  sparkle(): Promise<void> {
+    const canvas = this.screen?.canvas;
+    if (!canvas) return Promise.resolve();
+    const r = canvas.getBoundingClientRect();
+    const unit = r.width / 240;
+    return Q.sparkle({ x: r.left + 40 * unit, y: r.top + 64 * unit }, unit);
+  }
+
   animate(slow = 1): void {
     const mon = this.key ? Q.mon(this.key) : null;
     if (!mon || this.animating) return;
@@ -514,7 +533,7 @@ class Summary {
     const moves = this.page === 2 ? mon.moves.map((m: number) => dex.mv[m]) : [];
     const typeNames = this.page === 0 ? mon.types : this.page === 2 ? moves.map((m: any) => m[1]) : [];
     const [bg, pic, ...types] = await Promise.all([
-      Q.loadImage(ui(bgName)),
+      Q.loadImage(ui(mon.shiny ? `${bgName}-shiny` : bgName)),
       Q.loadImage(Q.assets.front(mon.species, mon.shiny, this.frame)),
       ...typeNames.map((t: number) => Q.loadImage(ui(`type${t}`))),
     ]);
@@ -589,8 +608,9 @@ class Summary {
       screen.text('EXP. POINTS', 86, 113, WHITE, { inside: WIN.expLabels });
       screen.text('NEXT LV.', 86, 129, WHITE, { inside: WIN.expLabels });
       screen.text(String(mon.exp), 0, 113, DARK, { right: 236, inside: WIN.exp, name: 'exp' });
-      screen.text(String(Math.max(0, mon.expNext - mon.expThis)), 0, 129, DARK, { right: 236, inside: WIN.exp, name: 'next' });
-      const fill = Math.round(64 * Math.min(1, (mon.exp - mon.expThis) / Math.max(1, mon.expNext - mon.expThis)));
+      screen.text(String(Math.max(0, mon.expNext - mon.exp)), 0, 129, DARK, { right: 236, inside: WIN.exp, name: 'next' });
+      const fill = Q.expPixels(mon);
+      this.expShown = { exp: mon.exp, next: Math.max(0, mon.expNext - mon.exp), px: fill };
       if (fill > 0) {
         screen.ctx.fillStyle = '#41cdff';
         screen.ctx.fillRect(168, 146, fill, 2);
@@ -642,11 +662,66 @@ class Summary {
 }
 
 const tooltip = new Tooltip();
+
+// the battle's EXP gain on the newest partner sprite (or the sidebar one): the old level's bar fills with a tick, the level number
+// changes with one MUS_LEVEL_UP, the new bar fills to its value, then done() (the evolution, if any)
+function levelUp(key: string, from: number, done: () => void, sounds = true): void {
+  const mon = Q.mon(key);
+  const onScreen = (el: Element) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.top >= 0 && r.bottom <= window.innerHeight;
+  };
+  // the newest transcript partner, else the thread's sidebar sprite when the reply has scrolled it away
+  const target =
+    [...document.querySelectorAll('.pkp-av')].reverse().find(onScreen) ??
+    [...document.querySelectorAll(`[data-row-key="${CSS.escape(key)}"] .pkp-ri`)].find(onScreen);
+  if (!mon || !target) return done();
+  const oldLevel: number = Q.levelForExp(from);
+  const startPx = Math.floor((64 * (from - oldLevel ** 3)) / ((oldLevel + 1) ** 3 - oldLevel ** 3));
+  const endPx: number = Q.expPixels(mon);
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const hold = (ms: number) => {
+    tooltip.pinnedUntil = Date.now() + ms + 100;
+  };
+  const fanfare = () => sounds && Q.fanfare('MUS_LEVEL_UP');
+  const se = (id: string) => sounds && Q.sfx(id);
+  const seStop = (id: string) => sounds && Q.sfxStop(id);
+  const finish = () => {
+    hold(1200);
+    Q.later(() => {
+      tooltip.hide(true);
+      done();
+    }, 1200);
+  };
+  // SE_EXP is one held note: it starts with the fill and is cut the moment the bar stops, as the game does
+  const fill = (level: number, px: number, to: number, next: () => void, first = true) => {
+    tooltip.show(target, { level, px });
+    hold(400);
+    if (px >= to) {
+      if (!first) seStop('SE_EXP');
+      return next();
+    }
+    if (first) se('SE_EXP');
+    Q.later(() => fill(level, Math.min(to, px + 1), to, next, false), 17);
+  };
+  if (reduced) {
+    tooltip.show(target, { level: mon.level, px: endPx });
+    fanfare();
+    return finish();
+  }
+  fill(oldLevel, startPx, 64, () => {
+    se('SE_EXP_MAX');
+    tooltip.show(target, { level: mon.level, px: 64 });
+    fanfare();
+    hold(1800);
+    Q.later(() => fill(mon.level, 0, endPx, finish), 1800);
+  });
+}
 const summary = new Summary();
 let hovered: Element | null = null;
 
 Q.listen(document, 'pointerover', (event: PointerEvent) => {
-  const target = (event.target as Element | null)?.closest?.(TARGETS) ?? null;
+  const target = (event.target as Element | null)?.closest?.(HOVER_TARGETS) ?? null;
   if (target === hovered) return;
   hovered = target;
   if (target) tooltip.show(target);
@@ -676,7 +751,13 @@ Q.listen(document, 'click', (event: MouseEvent) => {
   Q.sfx('SE_SELECT');
   summary.open(key);
   Q.later(() => {
-    if (summary.key === key && summary.node) summary.animate();
+    if (summary.key !== key || !summary.node) return;
+    // a shiny opens with the battle's sparkle over its picture, then the cry and animation, as a send-out does
+    if (!Q.mon(key)?.shiny) return summary.animate();
+    Q.store.markShinySeen(key);
+    void summary.sparkle().then(() => {
+      if (summary.key === key && summary.node) summary.animate();
+    });
   }, OPEN_CRY_MS);
 }, true);
 // keys act only while the popup (or the naming screen) has focus, so typing in the composer never turns pages
@@ -702,4 +783,4 @@ Q.cleanups.push(() => {
 });
 
 Q.listen(window, 'pe-sound-change', () => summary.renderSound());
-Object.assign(Q, { summary, tooltip, Summary, DARK, WHITE, themeK, cardMultiple });
+Object.assign(Q, { summary, tooltip, levelUp, Summary, DARK, WHITE, themeK, cardMultiple });

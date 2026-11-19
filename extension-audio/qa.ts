@@ -88,9 +88,36 @@ async function qaRun(nonce: string): Promise<void> {
   if (!qaDisposed) cinnamon.settings.set('qaResult', result);
 }
 
+// "music-..." nonces: render the battle tracks in the page (no sound), record the time, the kept length and the
+// pe-music-state events of a start in a muted window, then free them
+async function qaMusic(nonce: string): Promise<void> {
+  const audio = (window as any).__peAudio;
+  const result: Record<string, unknown> = { nonce, at: new Date().toISOString() };
+  const events: unknown[] = [];
+  const onEvent = (e: Event) => events.push((e as CustomEvent).detail);
+  window.addEventListener('pe-music-state', onEvent);
+  try {
+    await audio.ready;
+    for (const id of ['MUS_VS_TRAINER', 'MUS_VICTORY_TRAINER', 'MUS_LEVEL_UP']) {
+      const t0 = performance.now();
+      await audio.prepareMusic(id);
+      result[id] = { renderMs: Math.round(performance.now() - t0) };
+    }
+    result.musicState = audio.musicState('battle');
+    result.battleGain = audio.gain('battle');
+  } catch (error) {
+    result.error = String(error);
+  }
+  window.removeEventListener('pe-music-state', onEvent);
+  result.events = events;
+  audio?.stopMusic({ window: 'summary', free: true });
+  if (!qaDisposed) cinnamon.settings.set('qaResult', result);
+}
+
 cinnamon.settings.onChange((settings) => {
   const nonce = settings.qaRun;
   if (!nonce || nonce === qaLast || qaDisposed) return;
   qaLast = nonce;
-  void qaRun(String(nonce));
+  if (String(nonce).startsWith('music')) void qaMusic(String(nonce));
+  else void qaRun(String(nonce));
 });

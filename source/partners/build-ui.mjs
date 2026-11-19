@@ -1,7 +1,7 @@
 // Builds extension-partners/partners-dex.css (stats, learnsets, moves, abilities, natures) and partners-ui.css (the
 // Emerald summary and naming screen graphics, composed from pret/pokeemerald tilemaps). Run ./download.sh first,
 // then: node source/partners/build-ui.mjs
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { deflateSync } from 'node:zlib';
 import { dirname, join } from 'node:path';
@@ -224,13 +224,19 @@ const pages = [
   ['sum-moves', 'page_battle_moves.bin', 2],
   ['sum-moves-select', 'page_battle_moves.bin', 2],
 ];
-for (const [name, file, page] of pages) {
-  const base = tilemapLayer(sumTiles, sumPalettes, withDots(infoMap, page));
+// SetMonPicBackgroundPalette: a shiny mon's 8x8 tile picture frame (BG3 tiles 1..8, 4..11) uses palette 5
+function shinyFrame(map) {
+  const out = map.slice();
+  for (let ty = 4; ty < 12; ty++) for (let tx = 1; tx < 9; tx++) out[ty * 32 + tx] = (out[ty * 32 + tx] & 0x0fff) | (5 << 12);
+  return out;
+}
+for (const [name, file, page, shiny] of pages.flatMap((p) => [p, [`${p[0]}-shiny`, p[1], p[2], true]])) {
+  const base = tilemapLayer(sumTiles, sumPalettes, shiny ? shinyFrame(withDots(infoMap, page)) : withDots(infoMap, page));
   let over = () => null;
   if (file) {
     const layer = tilemapLayer(sumTiles, sumPalettes, words(readFileSync(join(SUM, file))));
     // the EFFECT box at the bottom left only slides in while a move is selected
-    over = name === 'sum-moves' ? (x, y) => (x < 80 ? null : layer(x, y)) : layer;
+    over = name.startsWith('sum-moves') && !name.startsWith('sum-moves-select') ? (x, y) => (x < 80 ? null : layer(x, y)) : layer;
   }
   images[name] = draw(240, 160, stack(over, base));
 }
@@ -267,6 +273,8 @@ images['hb-hp'] = draw(72, 8, (x, y) => {
   const v = hpbar.index[y * hpbar.width + tile * 8 + (x & 7)];
   return v ? hpbar.palette[v] : null;
 });
+// the shiny sparkle's ANIM_TAG_GOLD_STARS sheet: a 16x16 star at tile 0, 8x8 stars at tiles 4 and 5
+if (existsSync(join(BAT, 'gold_stars.png'))) images['gold-stars'] = spritePng(join(BAT, 'gold_stars.png'));
 dexData.hb = { ink: box.palette[1], shadow: box.palette[3], male: box.palette[11], female: box.palette[10], exp: box.palette[11] };
 
 // FONT_SMALL and FONT_NORMAL: 2 bpp glyphs in 16x16 cells, codes 0x000-0x1FF (0x100 + n is extra symbol n), and

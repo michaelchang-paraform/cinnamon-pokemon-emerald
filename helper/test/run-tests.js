@@ -11,9 +11,9 @@ const TEST_SERVICE = 'pkmn-emrld-test';
 const results = [];
 const fakeServers = [];
 
-function startHelper(name, args) {
+function startHelper(name, args, extraEnv = {}) {
   const child = spawn(process.execPath, ['--max-old-space-size=512', path.join(ROOT, 'src/server.js'), '--service-type', TEST_SERVICE, ...args], {
-    env: { ...process.env, PKMN_QUIET: process.env.PKMN_VERBOSE ? '0' : '1' },
+    env: { ...process.env, ...extraEnv, PKMN_QUIET: process.env.PKMN_VERBOSE ? '0' : '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', (d) => process.env.PKMN_VERBOSE && process.stdout.write(`[${name}] ${d}`));
@@ -150,6 +150,8 @@ async function testCpu() {
   const start = await c.waitFor((m) => m.type === 'battle_start', 5000, 'battle_start');
   const end = await c.waitFor((m) => m.type === 'battle_end', 180000, 'cpu battle_end');
   check('cpu battle plays to completion', ['win', 'loss'].includes(end.result) && end.turns > 0, `${end.result} (${end.reason}) in ${end.turns} turns vs ${start.opponent.name}, format ${start.format}`);
+  const cpuBalls = collectBalls(c.messages);
+  check('cpu: every Pokemon has one stable ball, every switch carries it', cpuBalls.seen.size >= 7 && cpuBalls.conflicts.length === 0 && cpuBalls.bad === 0 && cpuBalls.missing === 0, `${cpuBalls.seen.size} Pokemon, ${cpuBalls.conflicts.length} conflicts, ${cpuBalls.missing} switches without a ball`);
   const requests = c.messages.filter((m) => m.type === 'request');
   check('cpu: page only gets its own side requests', requests.length > 0 && requests.every((r) => r.request.side.id === 'p1'), `${requests.length} requests`);
 
@@ -166,6 +168,7 @@ async function testCpu() {
   const replay = await c2.waitFor((m) => m.type === 'battle' && m.lines.some((l) => l.startsWith('|switch|')), 5000, 'replayed log');
   await c2.waitFor((m) => m.type === 'request', 5000, 'replayed request');
   check('page reconnect resumes battle with log and request', resumed.battleId === start2.battleId && replay.lines.length > 0);
+  check('replayed log carries the balls', !!replay.balls && Object.keys(replay.balls).length >= 2, JSON.stringify(replay.balls));
   c2.send({ type: 'choose', battleId: start2.battleId, choice: 'move 1', rqid: 99999 });
   const stale = await c2.waitFor((m) => m.type === 'error' && m.re === 'choose', 5000, 'stale error');
   check('stale rqid is rejected', stale.code === 'stale_request', stale.code);
@@ -345,6 +348,11 @@ async function testLan() {
   const leakedStats = [...bTeamSecrets].filter((s) => aText.includes(s) && !aOwn.has(s));
   const shared = [...bTeamSecrets].filter((s) => aOwn.has(s)).length;
   check('A never sees B stat blocks', leakedStats.length === 0, `${bTeamSecrets.size} B stat blocks checked${shared ? `, ${shared} identical to one of A's own mons (skipped)` : ''}`);
+  const aBalls = collectBalls(a.messages);
+  const bBalls = collectBalls(b.messages);
+  const sharedBalls = [...aBalls.seen.keys()].filter((k) => bBalls.seen.has(k));
+  const disagree = sharedBalls.filter((k) => aBalls.seen.get(k) !== bBalls.seen.get(k));
+  check('lan: both screens show the same ball for every Pokemon', sharedBalls.length >= 7 && disagree.length === 0 && aBalls.conflicts.length + bBalls.conflicts.length === 0 && aBalls.missing + bBalls.missing === 0 && aBalls.bad + bBalls.bad === 0, `${sharedBalls.length} shared, ${disagree.length} disagree`);
   check('A never sees B exact HP', exactHpLeaks(a.messages, 'p2').length === 0);
   check('B never sees A exact HP', exactHpLeaks(b.messages, 'p1').length === 0);
   const lastLines = (c) => c.messages.filter((m) => m.type === 'battle').flatMap((m) => m.lines);
@@ -399,6 +407,41 @@ async function testLan() {
   return ea.turns;
 }
 
+const { pickBall, BALLS } = require('../src/battle');
+
+function testBallWeights() {
+  const counts = Object.fromEntries(BALLS.map((b) => [b, 0]));
+  for (let i = 0; i < 20000; i += 1) counts[pickBall()] += 1;
+  const masterPct = (counts.master / 200).toFixed(2);
+  check('ball weights: all 12 balls, Poke most common, Master about 1%', BALLS.length === 12 && BALLS.every((b) => counts[b] > 0) && counts.poke === Math.max(...Object.values(counts)) && counts.master > 100 && counts.master < 320, `master ${masterPct}%, poke ${(counts.poke / 200).toFixed(1)}%`);
+}
+
+/** Every ball the page saw: from its own requests and from switch envelopes. Conflicts are a different ball for one ident. */
+function collectBalls(messages) {
+  const seen = new Map();
+  const conflicts = [];
+  let bad = 0;
+  let missing = 0;
+  const note = (ident, ball) => {
+    if (!BALLS.includes(ball)) bad += 1;
+    if (seen.has(ident) && seen.get(ident) !== ball) conflicts.push(ident);
+    seen.set(ident, ball);
+  };
+  for (const m of messages) {
+    if (m.type === 'request' && m.request.side) for (const p of m.request.side.pokemon) note(p.ident, p.ball);
+    if (m.type === 'battle') {
+      for (const [ident, ball] of Object.entries(m.balls || {})) note(ident, ball);
+      for (const line of m.lines) {
+        const parts = line.split('|');
+        if (!['switch', 'drag', 'replace'].includes(parts[1])) continue;
+        const ident = parts[2].replace(/^(p[12])[a-z]?: /, '$1: ');
+        if (!m.balls || !m.balls[ident]) missing += 1;
+      }
+    }
+  }
+  return { seen, conflicts, bad, missing };
+}
+
 function testDnsSdCaps() {
   const { DnsSdDiscovery } = require('../src/dnssd');
   const d = new DnsSdDiscovery({ instance: 'pkmn-self00', type: 'pkmn-emerald', port: 1, txt: {} });
@@ -413,6 +456,78 @@ function testDnsSdCaps() {
   d.stop();
 }
 
+const FAKE = path.join(__dirname, 'fake-claude.js');
+
+async function claudeStubBattle({ port, mode, extra = [], forfeitAfterFallback = false }) {
+  const dump = path.join(require('os').tmpdir(), `pkmn-fake-claude-${process.pid}-${mode}.txt`);
+  try {
+    require('fs').unlinkSync(dump);
+  } catch {
+    // none yet
+  }
+  startHelper(`claude-${mode}`, ['--no-lan', '--port', String(port), '--claude-bin', FAKE, ...extra], { FAKE_CLAUDE_MODE: mode, FAKE_CLAUDE_DUMP: dump });
+  await waitForHealth(port);
+  const c = new Client(port);
+  await c.open();
+  c.send({ type: 'hello', protocol: 1 });
+  const welcome = await c.waitFor((m) => m.type === 'welcome', 5000, 'welcome');
+  autoPlay(c, `stub-${mode}`);
+  c.send({ type: 'start_cpu', opponent: 'claude', model: 'haiku' });
+  const start = await c.waitFor((m) => m.type === 'battle_start', 5000, 'claude battle_start');
+  if (forfeitAfterFallback) {
+    const fb = await c.waitFor((m) => m.type === 'opponent_fallback', 60000, 'opponent_fallback');
+    c.send({ type: 'forfeit', battleId: start.battleId });
+    void fb;
+  }
+  const end = await c.waitFor((m) => m.type === 'battle_end', 240000, `${mode} battle_end`);
+  c.close();
+  let prompts = '';
+  try {
+    prompts = require('fs').readFileSync(dump, 'utf8');
+    require('fs').unlinkSync(dump);
+  } catch {
+    // no prompt written
+  }
+  return { welcome, start, end, messages: c.messages, prompts };
+}
+
+async function testClaudeStub() {
+  const [legal, retry, illegal, sleepy] = await Promise.all([
+    claudeStubBattle({ port: 41953, mode: 'legal' }),
+    claudeStubBattle({ port: 41954, mode: 'retry' }),
+    claudeStubBattle({ port: 41955, mode: 'illegal' }),
+    claudeStubBattle({ port: 41956, mode: 'sleep', extra: ['--claude-timeout', '5'], forfeitAfterFallback: true }),
+  ]);
+  check('welcome reports Claude availability', legal.welcome.claude.available && legal.welcome.claude.version === '9.9.9', JSON.stringify(legal.welcome.claude));
+  check('claude battle_start names the opponent', legal.start.opponent.kind === 'claude' && legal.start.opponent.model === 'haiku' && legal.start.opponent.name === 'CLAUDE');
+  const ls = legal.end.opponentStats;
+  check('legal stub replies are played to the end', legal.end.turns > 0 && ls.claudeDecisions > 0 && ls.fallbacks === 0, JSON.stringify(ls));
+  const thinking = legal.messages.filter((m) => m.type === 'opponent_thinking');
+  check('opponent_thinking toggles on and off', thinking.some((m) => m.thinking) && thinking.some((m) => !m.thinking) && !thinking[thinking.length - 1].thinking, `${thinking.length} messages`);
+  const rs = retry.end.opponentStats;
+  check('an illegal reply gets one retry that can succeed', rs.claudeDecisions > 0 && rs.fallbacks === 0, JSON.stringify(rs));
+  const is = illegal.end.opponentStats;
+  const fallbackMsg = illegal.messages.find((m) => m.type === 'opponent_fallback');
+  check('3 bad replies in a row hand the battle to the scripted CPU', illegal.end.turns > 0 && is.handedOver && is.fallbacks === 3 && fallbackMsg && fallbackMsg.reason === 'failures', JSON.stringify(is));
+  const ss = sleepy.end.opponentStats;
+  check('a slow Claude times out to the scripted move', ss.fallbacks === 3 && ss.maxMs < 7000 && ss.handedOver, JSON.stringify(ss));
+
+  const p1Stats = new Set();
+  const p2Stats = new Set();
+  const block = (s) => `atk ${s.atk} def ${s.def} spa ${s.spa} spd ${s.spd} spe ${s.spe}`;
+  for (const m of legal.messages) if (m.type === 'request') for (const p of m.request.side.pokemon) p1Stats.add(block(p.stats));
+  for (const line of legal.prompts.split('\n')) {
+    const match = /atk \d+ def \d+ spa \d+ spd \d+ spe \d+/.exec(line);
+    if (match) p2Stats.add(match[0]);
+  }
+  const leaked = [...p1Stats].filter((b) => legal.prompts.includes(b) && !p2Stats.has(b));
+  check('Claude prompts hold no p1 private data', legal.prompts.length > 0 && leaked.length === 0 && !legal.prompts.includes('|request|'), `${legal.prompts.split('=====').length - 1} prompts checked`);
+
+  await sleep(3500);
+  const left = require('child_process').execFileSync('ps', ['-axo', 'command']).toString().split('\n').filter((l) => l.includes('fake-claude.js') && !l.includes('src/server.js'));
+  check('no claude child is left after the battles', left.length === 0, `${left.length} left`);
+}
+
 (async () => {
   const timer = setTimeout(() => {
     console.log('FAIL overall timeout');
@@ -420,9 +535,13 @@ function testDnsSdCaps() {
     process.exit(1);
   }, 600000);
   try {
+    testBallWeights();
     testDnsSdCaps();
-    await testCpu();
-    await testLan();
+    await testClaudeStub();
+    if (process.env.PKMN_ONLY !== 'claude') {
+      await testCpu();
+      await testLan();
+    }
   } catch (err) {
     check('test run', false, err.stack || err.message);
   } finally {

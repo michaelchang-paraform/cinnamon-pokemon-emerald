@@ -2,8 +2,9 @@
 
 const http = require('http');
 const { WebSocket, WebSocketServer } = require('ws');
-const { BattleSession } = require('./battle');
+const { BattleSession, BALLS } = require('./battle');
 const { SmartAI } = require('./ai');
+const { ClaudeAI, MODELS, probeClaude } = require('./claude/seat');
 const { Lan, LAN_PROTOCOL, isPeerMessage } = require('./lan');
 const { Dex } = require('pokemon-showdown');
 const { makeId, sanitizeName, sanitizeLook, TRAINER_CLASS_COUNT, isId, isChoice, isFormat: isFormatId, isPlainObject, parseJson, RateLimiter, NAME_MAX, log } = require('./util');
@@ -48,6 +49,7 @@ class Helper {
   }
 
   async start() {
+    this.claude = await probeClaude(this.config.claudeBin);
     await this.startPageApi();
     if (this.config.lan) {
       this.lan = new Lan({
@@ -66,6 +68,7 @@ class Helper {
   }
 
   async stop() {
+    if (this.battle && this.battle.ai) this.battle.ai.dispose();
     if (this.battle && this.battle.kind === 'local') this.battle.session.finish({ winnerSide: null, reason: 'shutdown' });
     for (const c of this.outgoing.values()) c.link.close('shutdown');
     for (const c of this.incoming.values()) c.link.close('shutdown');
@@ -209,6 +212,8 @@ class Helper {
       status: this.status(),
       looking: this.looking,
       defaultFormat: this.config.format,
+      claude: { ...this.claude, models: MODELS, defaultModel: this.config.claudeModel },
+      launchAgent: process.env.XPC_SERVICE_NAME === 'com.pokemon-emerald.helper',
       lan: { enabled: !!this.lan, port: this.lan ? this.config.lanPort : null, discovery: this.lan ? this.lan.discovery : 'off' },
     });
     this.toPage(page, this.lobbyMessage());
@@ -488,6 +493,7 @@ class Helper {
         b.logBytes += inner.lines.reduce((n, l) => n + l.length + 1, 0);
         if (b.logBytes > MAX_GUEST_LOG_BYTES || b.log.length + inner.lines.length > MAX_GUEST_LOG_LINES) return link.close('log_too_large');
         b.log.push(...inner.lines);
+        if (inner.balls) Object.assign(b.balls, inner.balls);
         for (const line of inner.lines) if (line.startsWith('|turn|')) b.turns = Math.max(b.turns, Number(line.slice(6)) || 0);
       }
       if (inner.type === 'request') {
@@ -514,7 +520,8 @@ class Helper {
     if (msg.type === 'battle') {
       if (!Array.isArray(msg.lines) || msg.lines.length > MAX_LINES) return null;
       const lines = msg.lines.filter((l) => typeof l === 'string' && l.length <= MAX_LINE && !UNSAFE_LINE.test(l));
-      return { type: 'battle', battleId: b.battleId, lines };
+      const balls = sanitizeBalls(msg.balls);
+      return { type: 'battle', battleId: b.battleId, lines, ...(balls ? { balls } : {}) };
     }
     if (msg.type === 'request') {
       const r = msg.request;
@@ -552,7 +559,7 @@ class Helper {
     c.link.send({ t: 'challenge_reply', challengeId: c.challengeId, accept: true });
     this.endIncoming(c.challengeId, 'accepted', undefined, false);
     this.declineAllIncoming('busy');
-    const b = { kind: 'remote', mode: 'lan', link: c.link, battleId: null, format: c.format, mySide: 'p2', opponent: { id: c.from.id, name: c.from.name, cls: c.from.trainer.cls, palette: c.from.trainer.palette }, myName: this.trainer.name, log: [], logBytes: 0, request: null, timers: {}, timerSeconds: null, turns: 0, ended: false };
+    const b = { kind: 'remote', mode: 'lan', link: c.link, battleId: null, format: c.format, mySide: 'p2', opponent: { id: c.from.id, name: c.from.name, cls: c.from.trainer.cls, palette: c.from.trainer.palette }, myName: this.trainer.name, log: [], balls: {}, logBytes: 0, request: null, timers: {}, timerSeconds: null, turns: 0, ended: false };
     b.startTimer = setTimeout(() => {
       if (!b.battleId && this.battle === b) this.endRemoteBattle({ result: 'aborted', reason: 'start_timeout', turns: 0 });
     }, BATTLE_START_TIMEOUT_MS);
@@ -599,10 +606,32 @@ class Helper {
     const format = msg.format === undefined ? this.config.format : msg.format;
     if (!isFormat(format)) return this.fail(page, 'start_cpu', 'bad_format', 'Bad format id');
     const difficulty = msg.difficulty === 'random' ? 'random' : 'smart';
+    const opponentKind = msg.opponent === undefined || msg.opponent === 'cpu' || msg.opponent === 'script' ? 'cpu' : msg.opponent;
+    if (opponentKind !== 'claude' && opponentKind !== 'cpu') return this.fail(page, 'start_cpu', 'bad_value', 'opponent must be "cpu" or "claude"');
+    const model = msg.model === undefined ? this.config.claudeModel : msg.model;
+    if (opponentKind === 'claude') {
+      if (!MODELS.includes(model)) return this.fail(page, 'start_cpu', 'bad_value', `model must be one of ${MODELS.join(', ')}`);
+      if (!this.claude.available) return this.fail(page, 'start_cpu', 'claude_unavailable', 'Claude Code was not found when the helper started');
+    }
     const myName = this.trainer.name;
-    const cpuName = uniqueName(`CPU ${CPU_NAMES[Math.floor(Math.random() * CPU_NAMES.length)]}`, myName);
+    const cpuName = uniqueName(opponentKind === 'claude' ? 'CLAUDE' : `CPU ${CPU_NAMES[Math.floor(Math.random() * CPU_NAMES.length)]}`, myName);
     let session;
-    const ai = new SmartAI({ side: 'p2', format, difficulty, write: (choice) => session.choose('p2', choice, { trusted: true }) });
+    const write = (choice) => session.choose('p2', choice, { trusted: true });
+    const ai = opponentKind === 'claude'
+      ? new ClaudeAI({
+          side: 'p2',
+          format,
+          write,
+          model,
+          bin: this.config.claudeBin,
+          timeoutMs: this.config.claudeTimeoutSeconds * 1000,
+          runBudgetUsd: 0.05,
+          battleBudgetUsd: this.config.claudeBattleBudgetUsd,
+          onThinking: (thinking) => this.broadcast({ type: 'opponent_thinking', battleId: session.id, thinking }),
+          onFallback: (reason) => this.broadcast({ type: 'opponent_fallback', battleId: session.id, reason }),
+          onDecision: (d) => log(`[claude] ${d.ok ? d.action : `fallback (${d.reason})`} in ${d.ms}ms`),
+        })
+      : new SmartAI({ side: 'p2', format, difficulty, write });
     const seats = {
       p1: { kind: 'human', name: myName, send: (m) => this.broadcast(m) },
       p2: { kind: 'ai', name: cpuName, feed: (line) => ai.receiveLine(line) },
@@ -612,7 +641,7 @@ class Helper {
     } catch (err) {
       return this.fail(page, 'start_cpu', 'bad_format', err.message);
     }
-    this.battle = { kind: 'local', mode: 'cpu', session, mySide: 'p1', peerSide: 'p2', link: null, opponent: { id: null, name: cpuName, cpu: true, difficulty, cls: Math.floor(Math.random() * TRAINER_CLASS_COUNT), palette: null } };
+    this.battle = { kind: 'local', mode: 'cpu', session, mySide: 'p1', peerSide: 'p2', link: null, ai, opponent: { id: null, name: cpuName, cpu: true, kind: opponentKind, model: opponentKind === 'claude' ? model : null, difficulty, cls: Math.floor(Math.random() * TRAINER_CLASS_COUNT), palette: null } };
     this.declineAllIncoming('busy');
     this.broadcast(this.battleStartMessage(false));
     session.on('end', (info) => this.onLocalBattleEnd(info));
@@ -626,8 +655,14 @@ class Helper {
     const b = this.battle;
     if (!b || b.kind !== 'local') return;
     this.battle = null;
+    let opponentStats;
+    if (b.ai instanceof ClaudeAI) {
+      b.ai.dispose();
+      opponentStats = b.ai.summary();
+      log('[claude] battle summary', JSON.stringify(opponentStats));
+    }
     const mine = perspective({ winnerSide: info.winnerSide, reason: info.reason, mySide: b.mySide });
-    this.broadcast({ type: 'battle_end', battleId: b.session.id, ...mine, turns: info.turns });
+    this.broadcast({ type: 'battle_end', battleId: b.session.id, ...mine, turns: info.turns, opponentStats });
     if (b.link) {
       b.link.send({ t: 'battle_end', battleId: b.session.id, winnerSide: info.winnerSide, reason: info.reason, turns: info.turns });
       setTimeout(() => b.link.close('battle_over'), 1000);
@@ -660,9 +695,9 @@ class Helper {
     const b = this.battle;
     if (b.kind === 'remote' && !b.battleId) return;
     this.toPage(page, this.battleStartMessage(true));
-    const snap = b.kind === 'local' ? b.session.snapshot(b.mySide) : { log: b.log, request: b.request, rqid: b.rqid, timers: this.guestTimers(b) };
+    const snap = b.kind === 'local' ? b.session.snapshot(b.mySide) : { log: b.log, balls: Object.keys(b.balls).length ? { ...b.balls } : null, request: b.request, rqid: b.rqid, timers: this.guestTimers(b) };
     const battleId = b.kind === 'local' ? b.session.id : b.battleId;
-    if (snap.log.length) this.toPage(page, { type: 'battle', battleId, lines: snap.log });
+    if (snap.log.length) this.toPage(page, { type: 'battle', battleId, lines: snap.log, ...(snap.balls ? { balls: snap.balls } : {}) });
     if (snap.request) this.toPage(page, { type: 'request', battleId, rqid: snap.rqid, request: snap.request });
     for (const t of snap.timers) this.toPage(page, { type: 'timer', battleId, side: t.side, secondsLeft: t.secondsLeft, forYou: t.side === b.mySide });
   }
@@ -721,6 +756,15 @@ function isFormat(id) {
   if (!isFormatId(id)) return false;
   const format = Dex.formats.get(id);
   return format.exists && format.effectType === 'Format' && !!format.team;
+}
+
+function sanitizeBalls(raw) {
+  if (!isPlainObject(raw)) return null;
+  const out = {};
+  for (const [ident, ball] of Object.entries(raw).slice(0, 12)) {
+    if (/^p[12]: [^|]{1,40}$/.test(ident) && BALLS.includes(ball)) out[ident] = ball;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function uniqueName(name, taken) {

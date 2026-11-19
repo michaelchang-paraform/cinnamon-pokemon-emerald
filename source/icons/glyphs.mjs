@@ -1,6 +1,6 @@
 // 1-bit pixel icons on the Emerald font grid: one cell is one font pixel
 // # is ink, anything else is empty; rows of one icon must have equal length
-const a = (text) => text.trim().split('\n').map((row) => row.trim());
+export const a = (text) => text.trim().split('\n').map((row) => row.trim());
 
 export const ART = {
   plus: a(`
@@ -860,18 +860,6 @@ export const ART = {
 .#######...
 ...###.....
 .#######...`),
-  bronzor: a(`
-.....#.....
-...........
-.#..###..#.
-...#...#...
-..#.#.#.#..
-..#.....#..
-..#..#..#..
-...#...#...
-.#..###..#.
-...........
-.....#.....`),
   pokedex: a(`
 ###########
 #.##......#
@@ -916,30 +904,6 @@ export const ART = {
 .#...#...#.
 #.........#
 ###########`),
-  dialga: a(`
-.......#...
-......##..#
-....####.##
-...#######.
-..##.#####.
-.########..
-####.###...
-.#...###...
-.....####..
-....#####..
-...######..`),
-  'dialga-plate': a(`
-.....#.....
-#....#....#
-.#..###..#.
-..#######..
-...#####...
-.####.####.
-...#####...
-..#######..
-.#..###..#.
-#....#....#
-.....#.....`),
   gauge: a(`
 ...#####...
 ..#.....#..
@@ -1311,12 +1275,35 @@ export const ART = {
 #.......#
 .#.....#.
 ..#####..`),
+  trash: a(`
+....###....
+...#...#...
+###########
+.#.......#.
+.#.#.#.#.#.
+.#.#.#.#.#.
+.#.#.#.#.#.
+.#.#.#.#.#.
+..#.....#..
+..#.....#..
+..#######..`),
+  'trash-s': a(`
+...###...
+#########
+.#.....#.
+.#.#.#.#.
+.#.#.#.#.
+.#.#.#.#.
+.#.#.#.#.
+.#.....#.
+..#####..`),
 };
 
 // codepoint (hex, Anthropicons-Variable private use) to art; small is the compact art for a box the regular art does not fit:
 // 9 cells or under for an icon seen in a 16 px box, 7 or under for one seen in a 12 px box (cell sizes seen: 1.369 and 1.667 px)
 // motifLabel: the motif applies only inside an element with this aria-label (the globe also means Language)
-// motif: Pokemon stand-in used when settings.motifs is not false (Bronzor and Dialga are Gen 4, by request)
+// motif: Pokemon stand-in used when settings.motifs is not false
+// an optional glyphs.local.mjs beside this file (not in the repository) can add arts and change entries: see build-icons.mjs
 export const MATCH = {
   e001: { art: 'plus', group: 'glyph' },
   e009: { asset: 'down-arrow', group: 'glyph' },
@@ -1380,7 +1367,7 @@ export const MATCH = {
   e0c5: { art: 'plug', group: 'object' },
   e0d2: { art: 'scroll', group: 'object' },
   e0d3: { art: 'search', small: 'search-s', group: 'glyph' },
-  e0d6: { art: 'gear', motif: 'bronzor', group: 'object' },
+  e0d6: { art: 'gear', group: 'object' },
   e0d7: { art: 'shapes', group: 'object' },
   e0da: { art: 'share', group: 'glyph' },
   e0dd: { art: 'sidebar', group: 'object' },
@@ -1393,6 +1380,7 @@ export const MATCH = {
   e0ee: { art: 'sun', group: 'object' },
   e0f1: { art: 'cowork', group: 'object' },
   e100: { art: 'toolbox', motif: 'bag', group: 'object' },
+  e101: { art: 'trash', small: 'trash-s', group: 'object' },
   e104: { art: 'person', group: 'object' },
   e109: { art: 'warning', small: 'warning-s', group: 'status' },
   e10d: { art: 'wrench', group: 'object' },
@@ -1400,10 +1388,12 @@ export const MATCH = {
   e11c: { art: 'tasks', group: 'object' },
   e11d: { art: 'refresh', group: 'glyph' },
   e11e: { art: 'undo', group: 'glyph' },
-  e130: { art: 'gauge', motif: 'dialga-plate', group: 'status' },
+  e130: { art: 'gauge', group: 'status' },
   e181: { art: 'comment', group: 'object' },
   // the app shows a selected state as the next codepoint, a filled twin of the outline glyph
   e182: { art: 'comment-fill', group: 'status' },
+  // the theme masks most carets itself; this covers the ones it does not, such as task group rows
+  f003: { art: 'chevron-down-s', group: 'glyph' },
   f022: { art: 'motion', group: 'object' },
   f031: { art: 'devices', group: 'object' },
   f0b6: { art: 'filter', small: 'filter-s', group: 'glyph' },
@@ -1413,7 +1403,7 @@ export const MATCH = {
 export const ALTERNATES = {
   e0d6: ['pc', 'cog-6', 'cog-8', 'sliders'],
   e100: ['pokedex', 'bag-pouch'],
-  e130: ['dialga', 'clock', 'stopwatch', 'hourglass', 'wall-clock'],
+  e130: ['clock', 'stopwatch', 'hourglass', 'wall-clock'],
   e11c: ['tasks-outline'],
 };
 
