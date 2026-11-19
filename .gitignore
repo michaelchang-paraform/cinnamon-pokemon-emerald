@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+.venv/
+
+# upstream material that build.sh fetches (game graphics, sound and fonts)
+source/*/download/
+source/audio/out/
+source/audio/tools/
+source/sprites/*.png
+
+# files that build.sh generates from that material
+themes/pokemon-emerald.json
+extension-theme/fonts.css
+extension-theme/fonts-hangul.css
+extension-theme/sprites.css
+extension-icons/icons.css
+extension-battle/battle-*.css
+extension-partners/partners-*.css
+extension-audio/audio-*.css
+source/fonts/PokemonEmeraldPro.woff2
+source/fonts/Galmuri9-Hangul.woff2
+source/fonts/DepartureMono-Keys.woff2
+source/fonts/DepartureSymbols.woff2
+
+# local leftovers
+.DS_Store
+.cinnamon-source.json
+*.log

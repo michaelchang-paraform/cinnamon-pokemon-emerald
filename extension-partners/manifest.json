@@ -1,0 +1,25 @@
+{
+  "id": "pokemon-partners",
+  "name": "Pokemon Partners",
+  "description": "Each chat gets its own Gen 3 partner Pokemon that evolves as the thread grows, shown in the sidebar, the chat header and beside replies, with an Emerald summary screen and nicknames, plus a customizable Emerald trainer avatar for your messages",
+  "version": "1.0.0",
+  "page": [
+    "core.ts",
+    "mon.ts",
+    "ui.ts",
+    "settings.ts",
+    "gba.ts",
+    "summary.ts",
+    "naming.ts",
+    "page.ts"
+  ],
+  "css": [
+    "partners-data.css",
+    "partners-icons.css",
+    "partners-fronts.css",
+    "partners-anim.css",
+    "partners-dex.css",
+    "partners-ui.css",
+    "partners.css"
+  ]
+}

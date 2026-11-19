@@ -1,0 +1,698 @@
+/* Partner icons, avatars, the evolution scene and the settings panel. --pkp-u is one sprite pixel at the theme's
+   text scale (3 device pixels at a 2.19 device pixel ratio); --pkp-u2 is one step smaller, for cramped gutters. */
+
+.pkp-ri,
+.pkp-ht,
+.pkp-av,
+.pkp-tr {
+  pointer-events: none;
+  background-image: var(--pkp-img);
+  background-repeat: no-repeat;
+  background-size: 100% 200%;
+  background-position: 0 0;
+  image-rendering: pixelated;
+}
+
+/* Sidebar rows: the icon sits where the label used to start, and the row's lines move over by one icon */
+.pkp-ri {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  width: calc(var(--pkp-u, 1.5px) * 24);
+  height: calc(var(--pkp-u, 1.5px) * 24);
+  translate: 0 -50%;
+}
+/* sidebar and header icons: the 32x32 party icon at the text's scale, cropped to the 24x24 box the Pokemon fills */
+.pkp-ri,
+.pkp-ht {
+  background-size: calc(var(--pkp-u, 1.5px) * 32) calc(var(--pkp-u, 1.5px) * 64);
+  background-position: calc(var(--pkp-u, 1.5px) * -4) calc(var(--pkp-u, 1.5px) * -7);
+}
+[data-pkp-row] > [data-row-main-button] > :is([data-row-label], .cm-top, .cm-bottom) {
+  margin-inline-start: calc(var(--pkp-u, 1.5px) * 26) !important;
+}
+/* on a sidebar card the icon centres on the title, the card's first line */
+[data-cm-card] > .pkp-ri {
+  top: calc(var(--pe-bpx, 1px) * 4 + max(var(--pe-px, 1px) * 2, 4px) + var(--pe-lh-line, 23px) / 2);
+}
+[data-row]:hover > .pkp-ri,
+[data-row][data-selected] > .pkp-ri {
+  animation: pkp-frames-crop 0.5s steps(1, end) infinite;
+}
+
+/* Chat header: before the thread title */
+.pkp-ht {
+  flex: none;
+  align-self: center;
+  width: calc(var(--pkp-u, 1.5px) * 24);
+  height: calc(var(--pkp-u, 1.5px) * 24);
+  margin-block: calc(var(--pkp-u, 1.5px) * -4);
+}
+.pkp-ht:is(:hover, [data-talking]) {
+  animation: pkp-frames-crop 0.5s steps(1, end) infinite;
+}
+
+/* Message avatars: in the transcript gutters, beside the message frames */
+.pkp-av,
+.pkp-tr {
+  position: absolute;
+  z-index: 1;
+}
+.pkp-av {
+  width: calc(var(--pkp-u, 1.5px) * 24);
+  height: calc(var(--pkp-u, 1.5px) * 24);
+  background-size: calc(var(--pkp-u, 1.5px) * 32) calc(var(--pkp-u, 1.5px) * 64);
+  background-position: calc(var(--pkp-u, 1.5px) * -4) calc(var(--pkp-u, 1.5px) * -7);
+}
+.pkp-tr {
+  width: calc(var(--pkp-u, 1.5px) * 16);
+  height: calc(var(--pkp-u, 1.5px) * 32);
+  background-image: var(--pkp-trainer);
+  background-size: 100% 100%;
+}
+.pkp-av[data-small] {
+  --pkp-u: var(--pkp-u2, 1px);
+}
+.pkp-tr[data-small] {
+  --pkp-u: var(--pkp-u2, 1px);
+}
+.pkp-av[data-talking] {
+  animation: pkp-frames-crop 0.24s steps(1, end) infinite, pkp-talk 0.48s steps(1, end) infinite;
+}
+
+/* the Gen 3 text-advance arrow, shown while the partner talks */
+.pkp-arrow {
+  position: absolute;
+  right: calc(var(--pkp-u, 1.5px) * -3);
+  bottom: calc(var(--pkp-u, 1.5px) * 1);
+  width: calc(var(--pkp-u, 1.5px) * 7);
+  height: calc(var(--pkp-u, 1.5px) * 5);
+  display: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 7 5' shape-rendering='crispEdges'%3E%3Cpath fill='%23706880' d='M1 1h6v1H6v1H5v1H4v1H3V4H2V3H1z'/%3E%3Cpath fill='%23e05038' d='M0 0h6v1H5v1H4v1H3v1H2V3H1V2H0z'/%3E%3C/svg%3E") no-repeat 0 0 / 100% 100%;
+  image-rendering: pixelated;
+}
+.pkp-av[data-talking] > .pkp-arrow {
+  display: block;
+  animation: pkp-arrow 0.6s steps(1, end) infinite;
+}
+
+/* the trainer's reserved column at the end of its message row: the bubble gives up that width */
+[data-pkp-tr-row] [data-cds="UserMessage"] {
+  box-sizing: border-box;
+  padding-inline-end: var(--pkp-tr-col, 0px) !important;
+}
+/* the trainer's name, under the avatar while the message is hovered */
+.pkp-tr::after {
+  content: attr(data-name);
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  translate: -50% calc(var(--pkp-u, 1.5px) * 1);
+  padding: 0 calc(var(--pkp-u, 1.5px) * 2);
+  font-size: var(--pe-fs-small, 11px);
+  line-height: var(--pe-lh-small, 14px);
+  white-space: nowrap;
+  color: var(--cds-text-secondary, currentColor);
+  background: var(--cds-surface-1, transparent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+[data-testid="transcript-row"]:hover > .pkp-tr::after,
+[data-pkp-show-label] > .pkp-tr::after {
+  opacity: 1;
+}
+
+/* Evolution scene */
+.pkp-evo {
+  position: fixed;
+  z-index: 2147482000;
+  width: calc(var(--pkp-u, 1.5px) * 176);
+  translate: -50% -50%;
+  cursor: pointer;
+  animation: pkp-fade-in 0.2s ease-out;
+  transition: opacity 0.4s;
+  box-shadow: 0 calc(var(--pkp-u, 1.5px) * 4) calc(var(--pkp-u, 1.5px) * 16) rgb(0 0 0 / 0.45);
+}
+.pkp-evo[data-leaving] {
+  opacity: 0;
+}
+.pkp-evo-stage {
+  position: relative;
+  height: calc(var(--pkp-u, 1.5px) * 88);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 60%, #3a5a88 0, #20304e 38%, #0c1426 72%);
+  border: calc(var(--pkp-u, 1.5px) * 2) solid #182030;
+  border-bottom: 0;
+}
+.pkp-evo-mon {
+  grid-area: 1 / 1;
+  width: calc(var(--pkp-u, 1.5px) * 64);
+  height: calc(var(--pkp-u, 1.5px) * 64);
+  image-rendering: pixelated;
+}
+.pkp-evo-stage[data-silhouette] .pkp-evo-mon {
+  filter: brightness(0) invert(1);
+}
+.pkp-evo-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  transition: opacity 0.18s ease-out;
+}
+.pkp-evo-flash[data-on] {
+  opacity: 0.8;
+  transition-duration: 0.12s;
+}
+.pkp-evo-text {
+  min-height: calc(var(--pe-lh-body, 22px) * 2);
+  padding: calc(var(--pkp-u, 1.5px) * 5) calc(var(--pkp-u, 1.5px) * 8);
+  background: #f8f8f8;
+  border: calc(var(--pkp-u, 1.5px) * 2) solid #485868;
+  box-shadow: inset 0 0 0 var(--pkp-u, 1.5px) #a8b8c8;
+  color: #404040;
+  font-family: "Pokemon Emerald", var(--font-sans-serif, sans-serif);
+  font-size: var(--pe-fs-body, 16px);
+  line-height: var(--pe-lh-body, 22px);
+  text-shadow: var(--pkp-u, 1.5px) var(--pkp-u, 1.5px) 0 #d8d8d0;
+}
+
+/* Settings row and panel */
+.pkp-set-control {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--pkp-u, 1.5px) * 4);
+}
+.pkp-set-mini {
+  width: calc(var(--pkp-u, 1.5px) * 16);
+  height: calc(var(--pkp-u, 1.5px) * 32);
+  image-rendering: pixelated;
+}
+.pkp-set-open,
+.pkp-set-reset {
+  padding: calc(var(--pkp-u, 1.5px) * 1) calc(var(--pkp-u, 1.5px) * 4);
+  border: var(--pe-bpx, 1px) solid var(--pe-rule, rgb(128 128 128 / 0.4));
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pkp-set-reset:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.pkp-set-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: calc(var(--pkp-u, 1.5px) * 8);
+  padding: calc(var(--pkp-u, 1.5px) * 4) 0;
+}
+.pkp-set-panel[hidden] {
+  display: none;
+}
+/* the preview: the sprite at twice the text scale, the name kept inside a box sized for 10 letters */
+.pkp-set-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--pkp-u, 1.5px) * 4);
+  padding: calc(var(--pkp-u, 1.5px) * 4);
+  background: var(--pe-code-chip, rgb(128 128 128 / 0.1));
+}
+.pkp-set-big {
+  width: calc(var(--pkp-u, 1.5px) * 32);
+  height: calc(var(--pkp-u, 1.5px) * 64);
+  image-rendering: pixelated;
+}
+.pkp-set-plate {
+  width: calc(var(--pkp-u, 1.5px) * 62);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  text-align: center;
+}
+.pkp-set-form {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--pkp-u, 1.5px) * 4);
+  min-width: 0;
+}
+.pkp-set-heading {
+  color: var(--cds-text-muted, inherit);
+}
+/* every option is the same box: 9 letters wide (Youngster), the sprite, and two label lines */
+.pkp-set-bases {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, calc(var(--pkp-u, 1.5px) * 62));
+  gap: calc(var(--pkp-u, 1.5px) * 2);
+}
+.pkp-set-base {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: calc(var(--pkp-u, 1.5px) * 2);
+  box-sizing: border-box;
+  width: calc(var(--pkp-u, 1.5px) * 62);
+  height: calc(var(--pkp-u, 1.5px) * 74);
+  padding: calc(var(--pkp-u, 1.5px) * 2);
+  overflow: hidden;
+  border: var(--pe-bpx, 1px) solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.pkp-set-base > span {
+  width: 100%;
+  overflow-wrap: normal;
+}
+.pkp-set-base:hover {
+  background: var(--pe-menu-hover, rgb(128 128 128 / 0.1));
+}
+.pkp-set-base[aria-checked="true"] {
+  border-color: var(--pe-strong, currentColor);
+  background: var(--pe-menu-hover, rgb(128 128 128 / 0.1));
+}
+.pkp-set-base canvas {
+  flex: none;
+  width: calc(var(--pkp-u, 1.5px) * 16);
+  height: calc(var(--pkp-u, 1.5px) * 32);
+  image-rendering: pixelated;
+}
+.pkp-set-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--pkp-u, 1.5px) * 3) calc(var(--pkp-u, 1.5px) * 8);
+}
+.pkp-set-color,
+.pkp-set-name {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--pkp-u, 1.5px) * 3);
+}
+.pkp-set-color input {
+  width: calc(var(--pkp-u, 1.5px) * 16);
+  height: calc(var(--pkp-u, 1.5px) * 10);
+  padding: 0;
+  border: var(--pe-bpx, 1px) solid var(--pe-rule, rgb(128 128 128 / 0.4));
+  background: transparent;
+  cursor: pointer;
+}
+.pkp-set-name input {
+  box-sizing: content-box;
+  width: calc(var(--pkp-u, 1.5px) * 62);
+  padding: calc(var(--pkp-u, 1.5px) * 1) calc(var(--pkp-u, 1.5px) * 3);
+  border: var(--pe-bpx, 1px) solid var(--pe-rule, rgb(128 128 128 / 0.4));
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: uppercase;
+}
+
+/* the user's trainer sprite opens the trainer panel */
+.pkp-tr {
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.pkp-tr:focus-visible {
+  outline: var(--pe-bpx, var(--pkp-u, 1.5px)) solid var(--pe-strong, #f8d070);
+  outline-offset: var(--pkp-u, 1.5px);
+}
+.pkp-trainer-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483200;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.45);
+}
+.pkp-trainer-box {
+  box-sizing: border-box;
+  width: min(calc(var(--pkp-u, 1.5px) * 420), calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.pkp-trainer-box > .pkp-set-panel {
+  margin: 0;
+}
+.pkp-trainer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--pkp-u, 1.5px) * 8);
+  margin-bottom: calc(var(--pkp-u, 1.5px) * 4);
+}
+
+/* Hover and click open the partner's details */
+.pkp-ri,
+.pkp-ht,
+.pkp-av {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.pkp-arrow {
+  pointer-events: none;
+}
+
+/* Tooltip: Emerald's player healthbox at the theme's scale, art from graphics/battle_interface */
+.pkp-tip {
+  position: fixed;
+  z-index: 2147482500;
+  width: calc(var(--pkp-u, 1.5px) * 106);
+  height: calc(var(--pkp-u, 1.5px) * 38);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+.pkp-hb-text {
+  image-rendering: pixelated;
+}
+.pkp-hb-fallback {
+  font-family: var(--pe-sans, sans-serif);
+  font-size: calc(var(--pkp-u, 1.5px) * 12);
+  line-height: calc(var(--pkp-u, 1.5px) * 14);
+  white-space: nowrap;
+}
+.pkp-hb-hp {
+  position: absolute;
+  left: calc(var(--pkp-u, 1.5px) * 24);
+  top: calc(var(--pkp-u, 1.5px) * 16);
+  width: calc(var(--pkp-u, 1.5px) * 72);
+  height: calc(var(--pkp-u, 1.5px) * 8);
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+}
+.pkp-hb-exp {
+  position: absolute;
+  left: calc(var(--pkp-u, 1.5px) * 32);
+  top: calc(var(--pkp-u, 1.5px) * 35);
+  width: calc(var(--pkp-u, 1.5px) * 64 * var(--fill, 0));
+  height: calc(var(--pkp-u, 1.5px) * 2);
+  background: var(--exp, #41cdff);
+}
+
+/* GBA screens: 240x160 sprite pixels at the theme's scale */
+.pkp-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483200;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.45);
+  outline: none;
+  animation: pkp-fade-in 0.15s ease-out;
+}
+/* the summary popup: a floating window like the battle's, title bar at the theme pixel (--pkp-tu) */
+.pkp-popup {
+  position: fixed;
+  z-index: 2147483200;
+  border: max(1px, var(--pe-bpx, 1px)) solid var(--cds-border-line, #3c5468);
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--df-bg-page, #141c24);
+  box-shadow: 0 calc(var(--pkp-tu, 1.5px) * 4) calc(var(--pkp-tu, 1.5px) * 12) rgb(0 0 0 / 0.5);
+  outline: none;
+  animation: pkp-fade-in 0.15s ease-out;
+}
+.pkp-popup:focus-visible {
+  border-color: var(--cds-role-accent-450, #f86858);
+}
+/* the battle window's plain bar: theme navy, white ink with the Gen 3 one-pixel shadow, flush with the body */
+.pkp-popup-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--pkp-tu, 1.5px) * 4);
+  height: calc(var(--pkp-tu, 1.5px) * 20);
+  padding: 0 calc(var(--pkp-tu, 1.5px) * 3) 0 calc(var(--pkp-tu, 1.5px) * 6);
+  border-bottom: max(1px, var(--pe-bpx, 1px)) solid var(--cds-border-line, #3c5468);
+  background: #182c44;
+  color: #f8f8f8;
+  font-family: var(--pe-sans, "Pokemon Emerald", sans-serif);
+  text-shadow: var(--pkp-tu, 1.5px) var(--pkp-tu, 1.5px) 0 #0c1624 !important;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.pkp-popup-title:active {
+  cursor: grabbing;
+}
+.pkp-popup-close {
+  flex: none;
+  width: calc(var(--pkp-tu, 1.5px) * 14);
+  height: calc(var(--pkp-tu, 1.5px) * 14);
+  padding: 0;
+  border: 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 7 7' shape-rendering='crispEdges'%3E%3Cpath fill='%23f8f8f8' d='M1 1h1v1H1zM5 1h1v1H5zM2 2h1v1H2zM4 2h1v1H4zM3 3h1v1H3zM2 4h1v1H2zM4 4h1v1H4zM1 5h1v1H1zM5 5h1v1H5z'/%3E%3C/svg%3E") no-repeat center / 100% 100%;
+  image-rendering: pixelated;
+  cursor: pointer;
+}
+.pkp-popup-close:hover,
+.pkp-popup-close:focus-visible {
+  background-color: #2c4462;
+  outline: none;
+}
+.pkp-keycap {
+  display: inline-grid;
+  place-items: center;
+  height: calc(var(--pkp-u, 1.5px) * 13);
+  padding: 0 calc(var(--pkp-u, 1.5px) * 2);
+  border: var(--pkp-u, 1.5px) solid #404040;
+  border-radius: calc(var(--pkp-u, 1.5px) * 2);
+  background: #f8f8f8;
+  box-shadow: 0 var(--pkp-u, 1.5px) 0 #404040;
+  overflow: hidden;
+}
+.pkp-keycap > canvas {
+  margin-top: calc(var(--pkp-u, 1.5px) * -3);
+}
+.pkp-popup > .pkp-gba {
+  position: absolute;
+  left: var(--pkp-sx, 0px);
+  top: var(--pkp-sy, 0px);
+  box-shadow: none;
+}
+.pkp-popup .pkp-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: calc(var(--pkp-tu, 1.5px) * 8);
+  height: calc(var(--pkp-tu, 1.5px) * 8);
+  background: linear-gradient(135deg, transparent 50%, var(--cds-border-line, #3c5468) 50%);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+/* title bar tools: the sound controls and the close control, drawn as pixel glyphs in the bar's own pixel */
+.pkp-popup-tools {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--pkp-tu, 1.5px) * 6);
+  flex: none;
+}
+.pkp-sound {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--pkp-tu, 1.5px) * 3);
+}
+.pkp-sound button {
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  cursor: pointer;
+  image-rendering: pixelated;
+}
+.pkp-sound button:hover,
+.pkp-sound button:focus-visible {
+  background-color: #2c4462;
+  outline: none;
+}
+.pkp-sound-mute {
+  width: calc(var(--pkp-tu, 1.5px) * 14);
+  height: calc(var(--pkp-tu, 1.5px) * 14);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' shape-rendering='crispEdges'%3E%3Cpath fill='%23f8f8f8' d='M2 5h3v4H2zM5 4h1v6H5zM6 3h1v8H6zM7 2h1v10H7zM10 4h1v1h-1zM11 5h1v4h-1zM10 9h1v1h-1z'/%3E%3C/svg%3E") no-repeat center / 100% 100%;
+}
+.pkp-sound-mute[data-muted] {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' shape-rendering='crispEdges'%3E%3Cpath fill='%23f8f8f8' d='M2 5h3v4H2zM5 4h1v6H5zM6 3h1v8H6zM7 2h1v10H7z'/%3E%3Cpath fill='%23f86858' d='M9 5h1v1H9zM10 6h1v1h-1zM11 7h1v1h-1zM12 8h1v1h-1zM12 5h1v1h-1zM11 6h1v1h-1zM10 7h1v1h-1zM9 8h1v1H9z'/%3E%3C/svg%3E");
+}
+.pkp-gba-canvas {
+  display: block;
+  width: calc(var(--pkp-u, 1.5px) * 240);
+  height: calc(var(--pkp-u, 1.5px) * 160);
+  image-rendering: pixelated;
+}
+.pkp-gba-hit {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.pkp-gba-hit:focus-visible {
+  outline: max(1px, var(--pkp-tu, 1px)) solid #f86858;
+  outline-offset: 0;
+}
+.pkp-gba[hidden] {
+  display: none;
+}
+.pkp-gba {
+  position: relative;
+  width: calc(var(--pkp-u, 1.5px) * 240);
+  height: calc(var(--pkp-u, 1.5px) * 160);
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 0 0 calc(var(--pkp-u, 1.5px) * 3) #303840, 0 calc(var(--pkp-u, 1.5px) * 6) calc(var(--pkp-u, 1.5px) * 24) rgb(0 0 0 / 0.5);
+  font-family: var(--pe-sans, "Pokemon Emerald", sans-serif);
+  font-size: calc(var(--pkp-u, 1.5px) * 16);
+  line-height: calc(var(--pkp-u, 1.5px) * 16);
+  user-select: none;
+}
+/* the theme sets every element to its body font size with an id-weight selector; the GBA screens draw at their own
+   pixel, so these two ids outrank it */
+html :is(.pkp-gba, .pkp-gba *):not(#_):not(#_) {
+  font-size: calc(var(--pkp-u, 1.5px) * 16) !important;
+  line-height: calc(var(--pkp-u, 1.5px) * 16) !important;
+}
+html :is(.pkp-popup-title, .pkp-popup-title *):not(#_):not(#_) {
+  font-size: calc(var(--pkp-tu, 1.5px) * 16) !important;
+  line-height: calc(var(--pkp-tu, 1.5px) * 16) !important;
+}
+.pkp-gba-img {
+  position: absolute;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+}
+.pkp-gba-text {
+  position: absolute;
+  color: var(--ink);
+  white-space: pre;
+  text-shadow: var(--pkp-u, 1.5px) 0 0 var(--shade), 0 var(--pkp-u, 1.5px) 0 var(--shade), var(--pkp-u, 1.5px) var(--pkp-u, 1.5px) 0 var(--shade) !important;
+  letter-spacing: 0 !important;
+  pointer-events: none;
+}
+.pkp-gba-wrap {
+  white-space: pre-line;
+}
+.pkp-gba-center {
+  display: flex;
+  justify-content: center;
+}
+.pkp-gba-nature {
+  color: #e60808;
+  text-shadow: var(--pkp-u, 1.5px) 0 0 #ffbd73, 0 var(--pkp-u, 1.5px) 0 #ffbd73, var(--pkp-u, 1.5px) var(--pkp-u, 1.5px) 0 #ffbd73 !important;
+}
+.pkp-gba-prompt {
+  position: absolute;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--pkp-u, 1.5px);
+  height: calc(var(--pkp-u, 1.5px) * 16);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #000;
+  font: inherit;
+  text-shadow: var(--pkp-u, 1.5px) 0 0 #d5d5cd, 0 var(--pkp-u, 1.5px) 0 #d5d5cd, var(--pkp-u, 1.5px) var(--pkp-u, 1.5px) 0 #d5d5cd !important;
+  cursor: pointer;
+}
+.pkp-gba-abtn {
+  width: calc(var(--pkp-u, 1.5px) * 16);
+  height: calc(var(--pkp-u, 1.5px) * 16);
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+}
+.pkp-gba-tab,
+.pkp-gba-turn,
+.pkp-gba-moverow {
+  cursor: pointer;
+}
+.pkp-gba-cursor {
+  box-shadow: inset 0 0 0 var(--pkp-u, 1.5px) #ff5231, inset 0 0 0 calc(var(--pkp-u, 1.5px) * 2) #ffff00;
+  pointer-events: none;
+}
+.pkp-gba-exp {
+  background: linear-gradient(90deg, #48c8f8 calc(var(--fill, 0) * 100%), transparent 0);
+}
+.pkp-gba-icon {
+  background-size: 100% 200%;
+  animation: pkp-frames 0.5s steps(1, end) infinite;
+}
+
+/* Naming screen */
+.pkp-naming-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.pkp-naming-key {
+  pointer-events: auto;
+  cursor: pointer;
+  height: calc(var(--pkp-u, 1.5px) * 16);
+}
+.pkp-naming-cursor {
+  box-shadow: inset 0 0 0 var(--pkp-u, 1.5px) #ff0808, inset 0 0 0 calc(var(--pkp-u, 1.5px) * 2) #ffbd73;
+  border-radius: calc(var(--pkp-u, 1.5px) * 2);
+  pointer-events: none;
+  animation: pkp-blink 0.6s steps(1, end) infinite;
+}
+.pkp-naming-btn {
+  cursor: pointer;
+}
+.pkp-naming-btn[data-active] {
+  filter: brightness(1.15);
+  box-shadow: 0 0 0 var(--pkp-u, 1.5px) #ff0808;
+}
+.pkp-naming-bar[data-current] {
+  animation: pkp-talk 0.5s steps(1, end) infinite;
+}
+@keyframes pkp-blink {
+  50% { opacity: 0.55; }
+}
+
+@keyframes pkp-frames {
+  0% { background-position: 0 0; }
+  50% { background-position: 0 100%; }
+}
+@keyframes pkp-frames-crop {
+  0% { background-position: calc(var(--pkp-u, 1.5px) * -4) calc(var(--pkp-u, 1.5px) * -7); }
+  50% { background-position: calc(var(--pkp-u, 1.5px) * -4) calc(var(--pkp-u, 1.5px) * -39); }
+}
+@keyframes pkp-talk {
+  0% { translate: 0 0; }
+  50% { translate: 0 calc(var(--pkp-u, 1.5px) * -1); }
+}
+@keyframes pkp-arrow {
+  0% { translate: 0 0; }
+  50% { translate: 0 var(--pkp-u, 1.5px); }
+}
+@keyframes pkp-fade-in {
+  from { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pkp-ri,
+  .pkp-ht,
+  .pkp-av,
+  .pkp-av > .pkp-arrow,
+  .pkp-evo,
+  .pkp-gba-icon,
+  .pkp-popup,
+  .pkp-naming-cursor,
+  .pkp-naming-bar {
+    animation: none !important;
+  }
+}

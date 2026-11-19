@@ -1,0 +1,398 @@
+# Pokemon Emerald for Cinnamon
+
+A Gen 3 pixel theme and five extensions for the Claude desktop app on macOS. You need [Cinnamon](https://github.com/naveengovind/claude-cinnamon) to use them. Cinnamon is a tool that adds themes and extensions to the Claude app and does not change Claude.app.
+
+The theme and the extensions change these parts of the app:
+
+- The colors, in a light mode and a dark mode.
+- The fonts. All text uses pixel fonts on one pixel grid.
+- The text boxes, the menus, the scrollbars and the selection cursor.
+- The sidebar, which looks like a PC box. Each group title has a ball before it.
+- The icons, which become 1-bit pixel art.
+- Each chat thread, which gets a partner Pokemon that gains levels and evolves.
+- Your messages, which show a trainer sprite that you can customize.
+- A battle window for Gen 3 random battles against the CPU or a trainer on your Wi-Fi.
+- Sound effects and cries in the battle window and the summary window.
+
+## Game graphics and sound
+
+The game graphics, fonts and sound belong to Nintendo, Creatures Inc. and GAME FREAK inc. This repository does not include them. It contains code and build scripts only.
+
+`build.sh` fetches the material from its upstream sources onto your Mac, for your personal use:
+
+- [pret/pokeemerald](https://github.com/pret/pokeemerald) for the graphics, the game fonts and the sound data.
+- [PokeAPI/sprites](https://github.com/PokeAPI/sprites) for a small number of sprites.
+- [pagefaultgames/pokerogue-assets](https://github.com/pagefaultgames/pokerogue-assets) for the Pokemon Emerald Pro font.
+- The [galmuri](https://www.npmjs.com/package/galmuri) npm package for the Galmuri9 font.
+
+Do not publish the files that the build generates.
+
+Pokemon is a trademark of Nintendo, Creatures Inc. and GAME FREAK inc. This project is not affiliated with them or endorsed by them. It is also not affiliated with Anthropic or endorsed by Anthropic.
+
+## Prerequisites
+
+- macOS 13 or later.
+- The Claude desktop app.
+- [Homebrew](https://brew.sh), to install Cinnamon.
+- The Xcode Command Line Tools, for `git` and the C++ compiler. The build compiles two sound tools from pret/pokeemerald.
+- Node.js 18 or later, with `npm`. The battle helper is tested on Node.js 26.
+- Python 3 with the `fonttools`, `brotli` and `pillow` packages.
+- An internet connection. The build downloads approximately 80 MB.
+
+To install the Xcode Command Line Tools:
+
+```bash
+xcode-select --install
+```
+
+## Install Cinnamon
+
+1. Install Cinnamon with Homebrew.
+
+   ```bash
+   brew install naveengovind/tap/cinnamon
+   ```
+
+2. Add the Cinnamon login item. This command also builds Cinnamon Helper.
+
+   ```bash
+   cinnamon install
+   ```
+
+3. In the Claude app, open the Help menu, then Troubleshooting, then click Enable Developer Mode.
+4. Open System Settings, then Privacy & Security, then Accessibility.
+5. Set the switch for Cinnamon Helper to on.
+6. Quit the Claude app and open it again.
+7. Check the setup.
+
+   ```bash
+   cinnamon doctor
+   ```
+
+Cinnamon Helper uses the Accessibility permission to turn Cinnamon on each time the Claude app starts.
+
+Known problem: `cinnamon install` and `cinnamon update` build Cinnamon Helper again. After that, the Accessibility switch can show on, but the permission does not work. To fix this, select Cinnamon Helper in the Accessibility list and click the minus button. Then click the plus button and add Cinnamon Helper again.
+
+## Build the assets
+
+1. Clone this repository.
+
+   ```bash
+   git clone https://github.com/michaelchang-paraform/cinnamon-pokemon-emerald.git
+   ```
+
+2. Go into the folder.
+
+   ```bash
+   cd cinnamon-pokemon-emerald
+   ```
+
+3. Make a Python environment in the folder. `build.sh` uses `.venv` when it exists.
+
+   ```bash
+   python3 -m venv .venv
+   ```
+
+4. Install the Python packages.
+
+   ```bash
+   .venv/bin/pip install fonttools brotli pillow
+   ```
+
+5. Run the build.
+
+   ```bash
+   ./build.sh
+   ```
+
+The build takes approximately 10 minutes. Most of that time is the download of approximately 2,000 small files. It does these steps:
+
+1. It installs the packages of the battle helper with `npm ci` in `helper/`.
+2. It fetches the upstream material into the `source/*/download/` folders.
+3. It makes the font subsets and writes `fonts.css` and `fonts-hangul.css`.
+4. It writes `themes/pokemon-emerald.json`.
+5. It compiles the two sound tools.
+6. It writes the sprite, icon, battle, partner and sound data as CSS files in the extension folders.
+7. It makes sure that each file in each `manifest.json` exists.
+
+You can run `./build.sh` again. It keeps the files that it downloaded before. To download everything again, delete the `source/*/download/` folders first.
+
+## Install the theme and the extensions
+
+Run the install script after the build.
+
+```bash
+./install.sh
+```
+
+The script runs the commands below from your home folder. You can also run them yourself, in this sequence. Replace `/path/to/cinnamon-pokemon-emerald` with the path of your clone.
+
+```bash
+cd ~
+```
+
+```bash
+cinnamon ext install /path/to/cinnamon-pokemon-emerald/extension-theme --yes
+```
+
+```bash
+cinnamon ext install /path/to/cinnamon-pokemon-emerald/extension-icons --yes
+```
+
+```bash
+cinnamon ext install /path/to/cinnamon-pokemon-emerald/extension-partners --yes
+```
+
+```bash
+cinnamon ext install /path/to/cinnamon-pokemon-emerald/extension-audio --yes
+```
+
+```bash
+cinnamon ext install /path/to/cinnamon-pokemon-emerald/extension-battle --yes
+```
+
+```bash
+cinnamon theme install /path/to/cinnamon-pokemon-emerald --yes
+```
+
+```bash
+cinnamon theme pokemon-emerald
+```
+
+Cinnamon applies the changes to the Claude app in approximately one second. You do not have to start the app again.
+
+The theme needs the `pokemon-emerald` extension. Without it, the app shows system fonts. The other four extensions are optional. Install only the ones you want.
+
+## Start the battle helper
+
+The battle window needs a small local server, the battle helper. The page code of an extension cannot find other computers on the network, but it can connect to `127.0.0.1`. The battle helper runs the battles, plays the CPU opponent and finds other trainers on your Wi-Fi.
+
+Start the battle helper from the folder of your clone.
+
+```bash
+./helper/start.sh
+```
+
+Keep the Terminal window open while you play. Press Ctrl-C to stop the battle helper.
+
+To open the battle window in the Claude app, press Ctrl+Shift+B or click the battle button.
+
+The battle helper listens on port 41851 on `127.0.0.1` for the app, and on port 41852 on all interfaces for other trainers. To play against the CPU only, start it with no network port.
+
+```bash
+./helper/start.sh --no-lan
+```
+
+macOS can ask if `node` can accept incoming connections and use the local network. Click Allow to play against other trainers. `helper/README.md` describes the options, the ports and the security limits.
+
+## Update
+
+1. Get the new version.
+
+   ```bash
+   git pull
+   ```
+
+2. Build again.
+
+   ```bash
+   ./build.sh
+   ```
+
+3. Install again.
+
+   ```bash
+   ./install.sh
+   ```
+
+4. If the battle helper runs, stop it with Ctrl-C and start it again.
+
+To update Cinnamon itself:
+
+```bash
+cinnamon update
+```
+
+If Cinnamon stops after an update, read the known problem in "Install Cinnamon".
+
+## Turn off or uninstall
+
+To go back to Claude's own colors:
+
+```bash
+cinnamon theme default
+```
+
+To turn one extension off, use its id. The ids are `pokemon-emerald`, `pokemon-icons`, `pokemon-partners`, `pokemon-audio` and `pokemon-battle`.
+
+```bash
+cinnamon ext disable pokemon-battle
+```
+
+To turn it on again:
+
+```bash
+cinnamon ext enable pokemon-battle
+```
+
+To remove everything, run these commands.
+
+```bash
+cinnamon theme default
+```
+
+```bash
+cinnamon theme remove pokemon-emerald
+```
+
+```bash
+cinnamon ext remove pokemon-battle --yes
+```
+
+```bash
+cinnamon ext remove pokemon-audio --yes
+```
+
+```bash
+cinnamon ext remove pokemon-partners --yes
+```
+
+```bash
+cinnamon ext remove pokemon-icons --yes
+```
+
+```bash
+cinnamon ext remove pokemon-emerald --yes
+```
+
+Then stop the battle helper and delete the folder of your clone.
+
+To remove Cinnamon itself, remove the login item first.
+
+```bash
+cinnamon uninstall
+```
+
+```bash
+brew uninstall cinnamon
+```
+
+## Troubleshooting
+
+Start with these two commands. `cinnamon status` shows the current theme, the extensions that are on, and if Cinnamon is applied. `cinnamon doctor` examines the setup and tells you how to fix each problem.
+
+```bash
+cinnamon status
+```
+
+```bash
+cinnamon doctor
+```
+
+| Problem | Cause and fix |
+| --- | --- |
+| The theme is not applied, and `cinnamon status` does not show `applied yes`. | Cinnamon Helper did not turn Cinnamon on. Make sure that Developer Mode is on in the Claude app. Then do the minus button fix in "Install Cinnamon". Then run `cinnamon apply`. |
+| The colors are correct, but the text uses system fonts. | The `pokemon-emerald` extension is off or not installed. Run `cinnamon ext` to see the list. Install or enable the extension. |
+| An extension is on, but a part of it is missing. | Cinnamon ignores a page file larger than approximately 60 KB after compilation and a CSS file larger than approximately 785 KB. Run `./build.sh` again and make sure that it completes. |
+| `cinnamon` stops with an error about a preload or a module that it cannot find. | The current folder has a `bunfig.toml` file with a preload that breaks the command. Run `cd ~` and try again. |
+| The battle window shows that the helper is offline. | Start the battle helper with `./helper/start.sh`. |
+| The battle window does not find other trainers. | Some Wi-Fi networks block discovery. Use "Add by IP" in the battle window. Also make sure that you clicked Allow in the macOS firewall and Local Network prompts. |
+| `build.sh` stops with `missing: pyftsubset`. | The Python packages are not installed in `.venv`. Do steps 3 and 4 of "Build the assets" again. |
+| `build.sh` stops during a download. | Run it again. It continues with the files that are missing. |
+
+To see what Cinnamon Helper did when the Claude app started:
+
+```bash
+cinnamon logs
+```
+
+## What each extension does
+
+| Folder | Id | Function |
+| --- | --- | --- |
+| `themes/` | `pokemon-emerald` (theme) | The colors, the text box frames, the PC box sidebar and the pixel scrollbars. `build.sh` writes it from `source/theme/`. |
+| `extension-theme/` | `pokemon-emerald` | Loads the pixel fonts, sets the pixel scale and moves the black selection cursor. Draws the ball before each sidebar group title. |
+| `extension-icons/` | `pokemon-icons` | Draws the app's icons again as 1-bit pixel art on the font grid. |
+| `extension-partners/` | `pokemon-partners` | Gives each chat thread a partner Pokemon with a summary window and a nickname. Shows your trainer sprite on your messages. |
+| `extension-audio/` | `pokemon-audio` | Plays the sound effects and the cries for the battle window and the summary window. |
+| `extension-battle/` | `pokemon-battle` | The battle window. It needs the battle helper. |
+| `helper/` | | The battle helper, a local Node.js server. |
+| `source/` | | The build scripts, the font tools and the hand-drawn icon art. Cinnamon does not install this folder. |
+
+### Theme extension settings
+
+The `pokemon-emerald` extension reads these keys from `settings["pokemon-emerald"]` in Cinnamon's `config.json`. The file is in `~/.config/claude-cinnamon/`.
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `partner` | `"mudkip"`, `"treecko"`, `"torchic"` or `"none"`. A partner that floats in the sidebar. Set it to `"none"` when you use `pokemon-partners`. | `"mudkip"` |
+| `scale` | Device pixels for each font pixel, a whole number from 1 to 12. Set it to fix the size and ignore zoom. | One step for each app zoom step, from `round(display scale * 1.2)` at 100% zoom |
+| `textSize` | `"classic"`, `"large-chat"` (messages and the input box one font pixel step larger) or `"large"` (everything one step larger). Also in Settings, then Appearance, then Text size. | `"classic"` |
+| `groupBall` | `"poke"`, `"great"`, `"ultra"`, `"master"`, `"safari"`, `"net"`, `"dive"`, `"nest"`, `"repeat"`, `"timer"`, `"luxury"` or `"premier"`. Also in Settings, then Appearance, then Group ball. | `"poke"` |
+
+The fonts stay sharp only at whole multiples of their pixel grid. The extension calculates all font sizes, line heights and frame sizes from `scale`. Each app zoom step (Cmd+= or Cmd+-) changes `scale` by one.
+
+Korean (Hangul) text uses the Galmuri9 pixel font on the same pixel grid as the Emerald font. The arrow and keyboard symbols that the Emerald font does not have use Galmuri9 or Departure Mono.
+
+### Partners
+
+- The partner comes from the thread's id, so the same thread always gets the same Pokemon. The pool is the base stage of each Gen 1 to 3 evolution family, plus single-stage Pokemon at a lower weight.
+- The partner's level is 5 plus the number of assistant replies in the thread, to a maximum of 100. It evolves at level 15 and level 35. When the partner of the open thread evolves, a short scene plays over the chat.
+- The partner shows as a party icon on each sidebar row, next to the chat title and next to the first assistant message of each reply. While Claude responds, the icon moves faster.
+- Hover over a partner to see its healthbox. Click it to open the summary window. Drag the title bar to move the window and drag the corner to change its size.
+- In the summary window, the left and right arrow keys change the page. Return opens the name or the move data. Esc goes back and closes the window.
+- On the INFO page, Return opens the naming screen. Type on your keyboard or select keys with the arrow keys and Space. A nickname has a maximum of 10 characters. Each thread keeps its nickname.
+- Nature, IVs, gender, ability and shininess (1 in 8192) come from the thread's seed. Stats use the Gen 3 formulas.
+- Reply counts and nicknames stay in the page's `localStorage` under `pokemon-partners:v1`. The limit is 400 threads.
+
+To change your trainer, open Settings, then Appearance, then Pokemon partners, then Customize. Select a trainer, change the colors and set a name. Cinnamon saves the selection as `settings["pokemon-partners"].trainer` in `config.json`.
+
+### Icons
+
+- The app draws each icon as one glyph of its icon font. The extension reads the glyph's codepoint and finds it in a table. On a match, it hides the glyph and draws a mask image in the current text color, so the theme colors apply.
+- A glyph that is not in the table keeps the app's drawing. New icons from an app update stay as they are.
+- `settings["pokemon-icons"].motifs` in `config.json` selects the Pokemon stand-ins, for example the Bag for Customize and the Town Map for the browser. Set it to `false` to get a toolbox, a gear, a globe, a prompt and a gauge.
+
+The art is in `source/icons/glyphs.mjs` as text grids. `MATCH` connects each codepoint to its art.
+
+## For developers
+
+`build.sh` runs these scripts. You can run one of them alone after you change its source.
+
+| Script | Output |
+| --- | --- |
+| `source/fonts/subset-emerald.sh`, `subset-galmuri.sh`, `subset-symbols.sh` | The font subsets in `source/fonts/` |
+| `node source/fonts/build-fonts.mjs` | `extension-theme/fonts.css` and `fonts-hangul.css` |
+| `node source/theme/build-theme.mjs` | `themes/pokemon-emerald.json` from `source/theme/theme.css` |
+| `node source/sprites/build-sprites.mjs` | `extension-theme/sprites.css` |
+| `node source/icons/build-icons.mjs` | `extension-icons/icons.css` |
+| `node source/battle/build-assets.mjs` | The five `extension-battle/battle-*.css` files |
+| `node source/partners/build-assets.mjs` and `build-ui.mjs` | The six `extension-partners/partners-*.css` files |
+| `node source/audio/build-audio.mjs` | The `extension-audio/audio-*.css` files |
+
+Each `sync-live.sh` script under `source/` copies one built extension directly into `~/.config/claude-cinnamon/`. The scripts for the icons, partners, battle and audio extensions need [Bun](https://bun.sh) to measure the compiled page files. They refuse a page file larger than 55 KB after compilation and a CSS file larger than 500 KB.
+
+The battle helper has an end-to-end test. It starts its own helpers on test ports and stops them at the end.
+
+```bash
+cd helper
+```
+
+```bash
+node test/run-tests.js
+```
+
+The sound code has tests that run with Bun after the build.
+
+```bash
+bun test source/audio/test
+```
+
+## Credits
+
+- Pokemon Emerald Pro font: crystalwalrein, CC BY-SA 3.0. The build makes a subset of it. See `extension-theme/PokemonEmeraldPro-LICENSE.txt`.
+- Departure Mono font: Helena Zhang, SIL Open Font License 1.1. See `extension-theme/DepartureMono-LICENSE`.
+- Galmuri9 font: Lee Minseo (quiple), SIL Open Font License 1.1, from github.com/quiple/galmuri. The build makes a subset of it. See `extension-theme/Galmuri-OFL.txt`.
+- Game graphics, game fonts, sound data and move and ability texts: the pret/pokeemerald decompilation and the PokeAPI sprites repository. The build fetches them. See the `SPRITES-NOTICE.txt` and `AUDIO-NOTICE.txt` files in the extension folders.
+- Battle rules, stats, learnsets and the evolution table: the MIT-licensed `pokemon-showdown` package.
+- The text box frames, the cursor and the pixel icons are new pixel art. The frames and the cursor come from `source/lib/png.mjs` and the icons from `source/icons/glyphs.mjs`.

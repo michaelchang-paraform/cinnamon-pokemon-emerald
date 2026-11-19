@@ -1,0 +1,5 @@
+sprites.css bundles Generation III graphics: the twelve ball sprites from the pret/pokeemerald decompilation,
+https://github.com/pret/pokeemerald (graphics/balls), and the partner sprites from the PokeAPI sprites repository,
+https://github.com/PokeAPI/sprites. All image contents are copyright Nintendo, Creatures Inc. and GAME FREAK Inc.
+They are included for personal use only. Rebuild with source/sprites/download-balls.sh and
+source/sprites/build-sprites.mjs.

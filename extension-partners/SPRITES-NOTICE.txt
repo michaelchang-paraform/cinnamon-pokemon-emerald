@@ -1,0 +1,8 @@
+partners-icons.css, partners-fronts.css, partners-anim.css and partners-ui.css bundle Generation III graphics from the pret/pokeemerald
+decompilation, https://github.com/pret/pokeemerald: party icons, front pics with their shiny palettes, trainer
+overworld sprites, the second front animation frames, the summary screen, naming screen, type icon and battle healthbox graphics, and the small font.
+partners-dex.css holds the normal and small fonts and move and ability descriptions from the same repository. A few fronts fall back to the PokeAPI
+sprites repository, https://github.com/PokeAPI/sprites (CC0 1.0). All image and text contents are copyright Nintendo,
+Creatures Inc. and GAME FREAK Inc. They are included for personal use only. Stats, learnsets and the evolution table
+come from the MIT-licensed pokemon-showdown package. Rebuild with source/partners/build-assets.mjs and
+source/partners/build-ui.mjs.
