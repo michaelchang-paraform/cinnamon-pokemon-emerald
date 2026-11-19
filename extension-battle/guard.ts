@@ -233,6 +233,8 @@ async function walk(app: any, stopAt = ''): Promise<{ states: number; runs: numb
       }
     }
   };
+  const recorded = await ns.moveData?.();
+  const moveGaps = { bgOnly: (recorded?.moves?.['#bgOnly'] ?? []) as string[], failed: (recorded?.moves?.['#failed'] ?? []) as string[] };
   ns.sendOutFastForward = true;
   const finish = <T,>(result: T): T => {
     ns.sendOutFastForward = false;
@@ -240,6 +242,8 @@ async function walk(app: any, stopAt = ''): Promise<{ states: number; runs: numb
     ns.glyphLog = undefined;
     findings.push(...glyphFindings(glyphLog));
     for (const id of ns.missingEffects?.() ?? []) findings.push({ state: 'audio', issue: 'sound effect missing from pokemon-audio', a: id, b: 'plays silence' });
+    for (const id of moveGaps.bgOnly) findings.push({ state: 'moves', issue: 'move animation with a display effect not drawn', a: id, b: 'OBJ window, window 1, mosaic or affine BG' });
+    for (const id of moveGaps.failed) findings.push({ state: 'moves', issue: 'move animation not recorded', a: id, b: 'sound timeline and lunge' });
     return result;
   };
   let states = 0;

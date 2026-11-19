@@ -2,6 +2,9 @@
 // pokemon-showdown dex. PokeAPI sprites fill in only the forms pokeemerald lacks. Run: node source/battle/build-assets.mjs
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { deflateSync } from 'node:zlib';
+import { recordMoveAnims } from './tools/battleanim/record.mjs';
+import { packMoveAnims } from './tools/battleanim/pack.mjs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -262,6 +265,31 @@ const typeNameTable = readFileSync(join(HERE, 'download', 'pret-anims', 'src', '
 const gameTypes = Object.fromEntries([...typeNameTable.matchAll(/\[TYPE_(\w+)\] = _\("([^"]*)"\)/g)].map((m) => [m[1], m[2]]));
 const typeNames = TYPES.map((t) => gameTypes[t === '???' ? 'MYSTERY' : t.toUpperCase()] ?? t.toUpperCase());
 const data = { types: TYPES, species, moves, sprites, fonts, chars, colors, fa: frontAnims, hp: hpColors, se, typeNames, slot: { plain: slotColors('plain'), on: slotColors('on'), fnt: slotColors('fnt'), fntOn: slotColors('fntOn') } };
+// move animations: the game's own anim engine run over every script (tools/battleanim), kept for the moves of
+// the gen 3 random battle pool, deflated
+const ANIM_ROOT = join(HERE, 'download', 'pokeemerald-anim');
+if (!existsSync(join(ANIM_ROOT, 'data', 'battle_anim_scripts.s'))) throw new Error(`missing ${ANIM_ROOT}: run source/battle/fetch-anims.sh`);
+const randomSets = require('pokemon-showdown/dist/data/random-battles/gen3/sets.json');
+const movePool = new Set(Object.values(randomSets).flatMap((s) => s.sets.flatMap((set) => set.movepool)).map((m) => dex.moves.get(m).id));
+const poolIds = Object.fromEntries(dex.moves.all().filter((m) => m.num > 0 && m.num <= 354 && movePool.has(m.id)).map((m) => [m.num, m.id]));
+// the recorder is an x86_64 macOS build (it keeps the game's 32-bit pointers below 4 GB), so it needs macOS and,
+// on Apple Silicon, Rosetta; without them the moves keep their sound-only timelines (data.se)
+const canRecordAnims = process.env.BATTLE_SKIP_MOVE_ANIMS !== '1' && process.platform === 'darwin' && spawnSync('arch', ['-x86_64', '/usr/bin/true']).status === 0;
+if (!canRecordAnims) console.log('move anims: skipped (the recorder needs macOS and x86_64 support, Rosetta on Apple Silicon: softwareupdate --install-rosetta); moves and effects play their sound-only timelines');
+const recorded = canRecordAnims ? recordMoveAnims({ root: ANIM_ROOT, out: join(HERE, 'tools', 'battleanim', 'out') }) : { moves: [], effects: [] };
+const moveRuns = recorded.moves;
+const moveAnims = packMoveAnims({ root: ANIM_ROOT, runs: moveRuns, effects: recorded.effects, moveIds: poolIds });
+const failedRuns = [
+  ...moveRuns.filter((r) => (r.fail || r.stuck) && poolIds[r.m]).map((r) => `${poolIds[r.m]}/${r.a ? 'foe' : 'player'}`),
+  ...recorded.effects.filter((r) => r.fail).map((r) => `${r.name}/${r.a ? 'foe' : 'player'}`),
+];
+const endless = [...new Set(recorded.effects.filter((r) => r.stuck).map((r) => r.name))];
+if (endless.length) console.log(`general and status animations left out (they never end outside the battle engine): ${endless.join(' ')}`);
+console.log(`move anims: ${Object.keys(moveAnims.moves).length} of ${Object.keys(poolIds).length} pool moves recorded, ${Object.keys(moveAnims.status).length} general and status animations, ${moveAnims.layers.length} BG layer images, ${moveAnims.bgOnly.length} with display features not drawn${failedRuns.length ? `, failed: ${failedRuns.join(' ')}` : ''}`);
+// the moves in two files by name, each well under the CSS size limit
+const moveNames = Object.keys(moveAnims.moves).sort();
+const moveHalves = [moveNames.slice(0, moveNames.length >> 1), moveNames.slice(moveNames.length >> 1)].map((names) => Object.fromEntries(names.map((n) => [n, moveAnims.moves[n]])));
+const deflated = (value) => b64(deflateSync(JSON.stringify(value), { level: 9 }));
 const outputs = [
   ['battle-data.css', `.pkb-data { --pkb-data: "${b64(JSON.stringify(data))}"; }\n`],
   ['battle-ui.css', `.pkb-data { --pkb-ui: "${b64(JSON.stringify(ui))}"; }\n`],
@@ -270,6 +298,11 @@ const outputs = [
   ['battle-icons.css', `.pkb-data { --pkb-sprites-i: "${b64(Buffer.concat(blobs.i.chunks))}"; }\n`],
   ['battle-anim.css', `.pkb-data { --pkb-sprites-a: "${b64(Buffer.concat(blobs.a.chunks))}"; }\n`],
   ['battle-balls.css', `.pkb-data { --pkb-balls: "${b64(JSON.stringify(balls))}"; }\n`],
+  ['battle-moves.css', `.pkb-data { --pkb-moves: "${deflated({ ...moveHalves[0], '#v': moveAnims.video, '#bgOnly': moveAnims.bgOnly, '#failed': [...new Set(failedRuns.map((r) => r.split('/')[0]))] })}"; }\n`],
+  ['battle-moves2.css', `.pkb-data { --pkb-moves2: "${deflated(moveHalves[1])}"; }\n`],
+  ['battle-movesheets.css', `.pkb-data { --pkb-movesheets: "${deflated({ sheets: moveAnims.sheets, colors: moveAnims.colors })}"; }\n`],
+  ['battle-statusanims.css', `.pkb-data { --pkb-statusanims: "${deflated(moveAnims.status)}"; }\n`],
+  ['battle-movebgs.css', `.pkb-data { --pkb-movebgs: "${deflated(moveAnims.layers)}"; }\n`],
   ['battle-monanim.css', `.pkb-data { --pkb-monanim: "${b64(JSON.stringify(buildMonAnims()))}"; }\n`],
 ];
 for (const [name, css] of outputs) {

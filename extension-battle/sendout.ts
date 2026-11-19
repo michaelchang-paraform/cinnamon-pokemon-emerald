@@ -112,7 +112,7 @@ function drawSparks(canvas: HTMLCanvasElement, sheet: HTMLImageElement, sparks: 
 
 // guard hook: parks a send-out on one named frame so a capture can look at it
 async function hold(step: string): Promise<void> {
-  if (ns.sendOutFreeze === step) await new Promise(() => {});
+  await ns.freezeAt(step);
 }
 
 class FrameClock {

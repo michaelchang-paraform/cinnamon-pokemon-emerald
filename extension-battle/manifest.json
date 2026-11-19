@@ -2,7 +2,7 @@
   "id": "pokemon-battle",
   "name": "Pokemon Battle",
   "description": "Gen 3 style Pokemon battles in the Claude app: random battles against the CPU or trainers on your Wi-Fi, through the local battle helper",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "page": [
     "core.ts",
     "gfx.ts",
@@ -15,6 +15,7 @@
     "launcher.ts",
     "music.ts",
     "sendout.ts",
+    "moveanim.ts",
     "screens.ts",
     "page.ts",
     "guard.ts"
@@ -28,6 +29,11 @@
     "battle-anim.css",
     "battle-balls.css",
     "battle-monanim.css",
+    "battle-moves.css",
+    "battle-moves2.css",
+    "battle-statusanims.css",
+    "battle-movesheets.css",
+    "battle-movebgs.css",
     "battle.css"
   ]
 }

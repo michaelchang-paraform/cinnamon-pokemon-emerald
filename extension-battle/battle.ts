@@ -29,12 +29,24 @@ const ns = (window as any).__pkb;
 const { TEXT_MS, HOLD_MS, HP_STEP_MS, BAR, POKEMON, report, later, cancelLater, sleep, el, place, clamp, upper,
   moveText, monText, pixelArt, BALL, BALL_PAL, assets, canvasEl, imgEl, frameBox, parseIdent, parseDetails,
   parseHp, hpPx, effectName, STAT_NAMES, WEATHER_START, WEATHER_UPKEEP, WEATHER_END, WEATHER_ABILITY, damageLine,
-  healLine, statusLine, cantLine, sideLine, effectLine, cursorAt, peSound, WAIT } = ns;
+  healLine, statusLine, cantLine, sideLine, effectLine, cursorAt, peSound, WAIT, toId } = ns;
 
 const STATUS_ROW: Record<string, number> = { psn: 0, tox: 0, par: 1, slp: 2, frz: 3, brn: 4 };
 const BAR_COLORS: Record<string, [string, string]> = { g: ['#5ad583', '#73ffac'], y: ['#cdac08', '#ffe639'], r: ['#ac414a', '#ff5a39'] };
 const MOVE_SPOTS: Spot[] = [{ x: 16, y: 121 }, { x: 88, y: 121 }, { x: 16, y: 137 }, { x: 88, y: 137 }];
 const ACTION_LABELS = ['FIGHT', 'BAG', POKEMON, 'RUN'];
+
+// the order a residual [from] effect shows its animation, HP bar and message (battle_scripts_1.s): status and
+// curse damage print first (BattleScript_PoisonTurnDmg), held items, Ingrain, Wish and trapping moves animate
+// first (BattleScript_ItemHealHP_Ret, BattleScript_WrapTurnDmg), Leech Seed drains before it prints
+const ANIM_FIRST = ['leftovers', 'ingrain', 'wish', 'wrap', 'bind', 'firespin', 'clamp', 'whirlpool', 'sandtomb'];
+function residualOrder(from: string | undefined): ('anim' | 'bar' | 'message')[] {
+  if (from === undefined) return ['bar', 'message'];
+  const id = toId(String(from).replace(/^(move|item|ability):\s*/i, ''));
+  if (id === 'leechseed') return ['anim', 'bar', 'message'];
+  if (ANIM_FIRST.includes(id)) return ['anim', 'message', 'bar'];
+  return ['message', 'anim', 'bar'];
+}
 
 function hpColor(px: number): string {
   return px > BAR / 2 ? 'g' : px > Math.floor(BAR / 5) ? 'y' : 'r';
@@ -429,26 +441,27 @@ class Battle {
     const hp = parseHp(hpText);
     const active = side.active === mon;
     if (kind === 'damage' && kw.from === undefined && active) await this.blink(key);
-    if (kw.from !== undefined && active && !this.fast) this.sound.effect(kw.from, key, true);
-    const max = hp.max ?? mon.maxhp;
-    if (active) await this.animateHp(key, mon, hp.hp, max);
-    else {
-      mon.hp = hp.hp;
-      mon.maxhp = max;
-    }
-    if (hp.status && hp.status !== 'fnt') mon.status = hp.status;
-    if (active) this.renderBox(key);
+    const anim = async () => {
+      if (kw.from !== undefined && active) await this.effectAnim(this.sound.animKey('from', kw.from), key, () => this.sound.effect(kw.from, key, true));
+    };
+    const bar = async () => {
+      const max = hp.max ?? mon.maxhp;
+      if (active) await this.animateHp(key, mon, hp.hp, max);
+      else {
+        mon.hp = hp.hp;
+        mon.maxhp = max;
+      }
+      if (hp.status && hp.status !== 'fnt') mon.status = hp.status;
+      if (active) this.renderBox(key);
+    };
     const L = this.label(ident);
     const from = effectName(kw.from);
-    if (kind === 'damage') {
-      if (kw.from === undefined) {
-        await this.flushTexts();
-        return;
-      }
-      await this.say(damageLine(from, L));
-    } else if (kind === 'heal') {
-      await this.say(healLine(from, L, kw, this.label(kw.of)));
-    }
+    const message = async () => {
+      if (kind === 'damage' && kw.from === undefined) await this.flushTexts();
+      else if (kind === 'damage') await this.say(damageLine(from, L));
+      else if (kind === 'heal') await this.say(healLine(from, L, kw, this.label(kw.of)));
+    };
+    for (const step of residualOrder(kw.from)) await { anim, bar, message }[step]();
   }
 
   private async animateHp(key: Key, mon: Mon, toHp: number, toMax: number): Promise<void> {
@@ -546,6 +559,14 @@ class Battle {
     this.weatherEl.dataset.weather = this.weather;
   }
 
+  // a general or status animation on one mon (its own sounds included); the sound-only timeline when there is no
+  // recording
+  private async effectAnim(name: string | null, key: Key, fallback: () => void): Promise<void> {
+    if (this.fast) return;
+    if (name && (await ns.playEffectAnim?.(this, name, key))) return;
+    fallback();
+  }
+
   private async statusChange(ident: string | undefined, status: string | undefined, kw: Record<string, string>, start: boolean): Promise<void> {
     const found = this.mon(ident);
     const L = this.label(ident);
@@ -558,8 +579,9 @@ class Battle {
       const mon = p ? this.sides[p.side].mons.get(p.name) : null;
       if (mon) mon.status = '';
     }
-    if (start && !this.fast && found) this.sound.status(found.key, s);
+    // Rest puts its user to sleep with no status animation
     if (start && kw.from === 'move: Rest') return this.say(`${L} slept and became healthy!`);
+    if (start && found) await this.effectAnim(this.sound.animKey('status', s), found.key, () => this.sound.status(found.key, s));
     if (!start && kw.silent !== undefined) return;
     await this.say(statusLine(start, s, L));
   }
@@ -569,7 +591,7 @@ class Battle {
     const stat = STAT_NAMES[args[1]] ?? upper(args[1] ?? '');
     const n = Number(args[2]);
     const p = parseIdent(args[0]);
-    if (!this.fast && n && p) this.sound.stat(this.key(p.side), up);
+    if (n && p) await this.effectAnim(`g:StatsChange:${args[1]}${up ? '+' : '-'}${Math.min(2, Math.abs(n))}`, this.key(p.side), () => this.sound.stat(this.key(p.side), up));
     if (kw.from === 'ability: Intimidate' && kw.of) {
       await this.say(`${this.label(kw.of)}'s INTIMIDATE cuts ${L}'s ${stat}!`);
       return;
@@ -583,9 +605,9 @@ class Battle {
   private async weatherChange(weather: string | undefined, kw: Record<string, string>): Promise<void> {
     const w = weather ?? 'none';
     if (kw.upkeep !== undefined) {
-      if (!this.fast) this.sound.weather(w, 'me');
       this.weatherEl.dataset.weather = w;
       await this.say(WEATHER_UPKEEP[w] ?? '');
+      await this.effectAnim(this.sound.animKey('weather', w), 'me', () => this.sound.weather(w, 'me'));
       return;
     }
     if (w === 'none') {
@@ -600,18 +622,19 @@ class Battle {
     this.weatherEl.dataset.weather = w;
     this.app.renderBar();
     const by = parseIdent(kw.of);
-    if (kw.from?.startsWith('ability:') && by && !this.fast) this.sound.weather(w, this.key(by.side));
     if (kw.from?.startsWith('ability:') && kw.of) await this.say(`${this.label(kw.of)}'s ${upper(effectName(kw.from))} ${WEATHER_ABILITY[w] ?? ''}`);
     else await this.say(WEATHER_START[w] ?? '');
+    if (kw.from?.startsWith('ability:') && by) await this.effectAnim(this.sound.animKey('weather', w), this.key(by.side), () => this.sound.weather(w, this.key(by.side)));
   }
 
   private async cant(args: string[]): Promise<void> {
     const p = parseIdent(args[0]);
-    if (p && !this.fast) {
-      if (['slp', 'frz', 'par'].includes(args[1] ?? '')) this.sound.status(this.key(p.side), args[1]);
-      else this.sound.effect(args[1], this.key(p.side), false);
-    }
     await this.say(cantLine(this.label(args[0]), effectName(args[1]), upper(effectName(args[2]))));
+    if (p) {
+      const key = this.key(p.side);
+      if (['slp', 'frz', 'par'].includes(args[1] ?? '')) await this.effectAnim(this.sound.animKey('status', args[1]), key, () => this.sound.status(key, args[1]));
+      else await this.effectAnim(this.sound.animKey('activate', args[1]), key, () => this.sound.effect(args[1], key, false));
+    }
   }
 
   private async faint(ident: string | undefined): Promise<void> {
@@ -648,11 +671,19 @@ class Battle {
 
   private async effectText(cmd: string, args: string[], kw: Record<string, string>): Promise<void> {
     const p = parseIdent(args[0]);
-    if (p && !this.fast) {
-      if (cmd === '-prepare') this.sound.move(args[1] ?? '', this.key(p.side), parseIdent(args[2]) ? this.key(parseIdent(args[2])!.side) : null, true);
-      else if (cmd === '-start' || cmd === '-activate') this.sound.effect(args[1], this.key(p.side), false);
+    const text = () => this.say(effectLine(cmd, args, kw, this.label(args[0]), kw.of ? this.label(kw.of) : 'the foe'));
+    if (!p || this.fast) return text();
+    if (cmd === '-prepare') this.sound.move(args[1] ?? '', this.key(p.side), parseIdent(args[2]) ? this.key(parseIdent(args[2])!.side) : null, true);
+    if (cmd !== '-start' && cmd !== '-activate') return text();
+    const key = this.key(p.side);
+    const anim = () => this.effectAnim(this.sound.animKey('activate', args[1]), key, () => this.sound.effect(args[1], key, false));
+    // a confused or infatuated mon acting: the message, then the animation (BattleScript_MoveUsedIsConfused, ...InLove)
+    if (cmd === '-activate' && ['confusion', 'attract'].includes(toId(effectName(args[1])))) {
+      await text();
+      return anim();
     }
-    await this.say(effectLine(cmd, args, kw, this.label(args[0]), kw.of ? this.label(kw.of) : 'the foe'));
+    await anim();
+    await text();
   }
 
   private async sideText(start: boolean, args: string[]): Promise<void> {

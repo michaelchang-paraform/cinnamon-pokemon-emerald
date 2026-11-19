@@ -26,6 +26,7 @@ source/fonts/DepartureSymbols.woff2
 source/sprites/items.json
 source/battle/tools/monanim/mon-anims.json
 source/battle/tools/monanim/out/
+source/battle/tools/battleanim/out/
 
 # local icon overrides for one machine
 source/icons/glyphs.local.mjs

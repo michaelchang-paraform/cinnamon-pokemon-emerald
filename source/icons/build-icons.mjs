@@ -6,7 +6,7 @@ import { gridPng, dataUrl } from '../lib/png.mjs';
 import { readIndexedPng } from '../partners/png-read.mjs';
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { ART, MATCH, ASSETS, STATUS } from './glyphs.mjs';
+import { ART, MATCH, ASSETS, STATUS, SVG_BUTTONS } from './glyphs.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(HERE, '..', '..', 'extension-icons', 'icons.css');
@@ -46,6 +46,10 @@ for (const [codepoint, spec] of Object.entries(match)) {
   map[codepoint] = entry;
 }
 
+for (const name of Object.values(SVG_BUTTONS)) {
+  if (!arts[name]) throw new Error(`no art named ${name}`);
+  used.add(name);
+}
 for (const name of Object.values(STATUS)) {
   if (!arts[name]) throw new Error(`no art named ${name}`);
   used.add(name);
@@ -75,6 +79,15 @@ lines.push(
 for (const [label, name] of Object.entries(STATUS)) {
   if (arts[name].length !== 9 || arts[name][0].length !== 9) throw new Error(`status art ${name} must be 9 by 9`);
   lines.push(`.cm-menu > .cm-menu-item[data-label="${label}"]{--pi-status:var(--pi-art-${name})}`);
+}
+// svg buttons: the svg keeps its box, its shapes are hidden and the pixel art is masked onto its background
+for (const [label, name] of Object.entries(SVG_BUTTONS)) {
+  const svg = `button[aria-label="${label}"] svg`;
+  const rows = arts[name];
+  lines.push(
+    `${svg}{background-color:currentColor;-webkit-mask:var(--pi-art-${name}) center / calc(${CELL} * ${rows[0].length}) calc(${CELL} * ${rows.length}) no-repeat;mask:var(--pi-art-${name}) center / calc(${CELL} * ${rows[0].length}) calc(${CELL} * ${rows.length}) no-repeat;image-rendering:pixelated}`,
+    `${svg} > *{visibility:hidden}`,
+  );
 }
 writeFileSync(OUT, lines.join('\n') + '\n');
 console.log(`${OUT}: ${used.size} icons, ${Object.keys(map).length} codepoints`);

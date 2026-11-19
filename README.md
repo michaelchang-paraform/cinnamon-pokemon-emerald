@@ -10,7 +10,7 @@ Install Cinnamon first (see "Install Cinnamon"), or the last step fails after th
 git clone https://github.com/michaelchang-paraform/cinnamon-pokemon-emerald.git && cd cinnamon-pokemon-emerald && python3 -m venv .venv && .venv/bin/pip install fonttools==4.68.0 brotli==1.2.1 pillow==13.0.0 && ./build.sh && ./install.sh
 ```
 
-The build takes 7 to 10 minutes. It fetches the game graphics and sound onto your Mac. This repository does not contain them.
+The build takes 8 to 12 minutes. It fetches the game graphics and sound onto your Mac. This repository does not contain them.
 
 For battles, start the battle helper in its own Terminal tab:
 
@@ -55,7 +55,8 @@ Pokemon is a trademark of Nintendo, Creatures Inc. and GAME FREAK inc. This proj
 - The Claude desktop app.
 - [Homebrew](https://brew.sh), to install Cinnamon.
 - Cinnamon. See "Install Cinnamon".
-- The Xcode Command Line Tools, for `git`, the C++ compiler and `clang`. The build compiles two sound tools and two animation recorders from pret/pokeemerald code. `build.sh` stops at the start if `clang` is not there.
+- The Xcode Command Line Tools, for `git`, the C++ compiler and `clang`. The build compiles two sound tools and three animation recorders from pret/pokeemerald code. `build.sh` stops at the start if `clang` is not there.
+- x86_64 support, for the move animation recorder. On Apple Silicon, install Rosetta with `softwareupdate --install-rosetta`. Without x86_64 support, the build still completes. It skips the recording, and moves and status effects play only their sounds.
 - Node.js 18 or later, with `npm`. The battle helper is tested on Node.js 26.
 - Python 3 with the `fonttools`, `brotli` and `pillow` packages. `python3` comes with the Xcode Command Line Tools. "Build the assets" installs the packages at the versions of the tested build.
 - An internet connection. The build downloads approximately 100 MB.
@@ -135,7 +136,7 @@ Known problem: `cinnamon install` and `cinnamon update` build Cinnamon Helper ag
    ./build.sh
    ```
 
-The build takes 7 to 10 minutes. Most of that time is the download of approximately 2,000 small files. It does these steps:
+The build takes 8 to 12 minutes. Most of that time is the download of approximately 2,000 small files. It does these steps:
 
 1. It installs the packages of the battle helper with `npm ci` in `helper/`.
 2. It fetches the upstream material into the `source/*/download/` folders.
@@ -144,8 +145,9 @@ The build takes 7 to 10 minutes. Most of that time is the download of approximat
 5. It makes the list of the items that you can get in Emerald and writes the item icons.
 6. It compiles the two sound tools.
 7. It compiles the game's entrance, ball throw and send-out animation code with `clang`. It runs each program one time to record the animations, and then deletes the programs.
-8. It writes the sprite, icon, battle, partner and sound data as CSS files in the extension folders.
-9. It makes sure that each file in each `manifest.json` exists.
+8. It compiles the game's battle animation engine as an x86_64 program. It records the move, status and stat animations, and then deletes the program. Without x86_64 support, it skips this step.
+9. It writes the sprite, icon, battle, partner and sound data as CSS files in the extension folders.
+10. It makes sure that each file in each `manifest.json` exists.
 
 During the build, `npm` can print deprecation warnings and warnings about install scripts. These warnings are expected. The build is complete when the last line tells you to run `./install.sh`.
 
@@ -479,6 +481,7 @@ To change your trainer, open Settings, then Appearance, then Pokemon partners, t
 - The lobby also lists the trainers that the battle helper finds on your Wi-Fi. Each trainer needs this setup and a battle helper that runs.
 - Each Pokemon has its own ball, which the battle helper selects at random from the twelve Emerald balls. The ball is thrown and opens with the game's send-out animation and particles, and then the Pokemon plays its entrance animation from the game. Set `settings["pokemon-battle"].sendOutV2` to `false` to get the short send-out.
 - The battle sounds are the game's own effects: move, hit, faint, status and menu sounds. The build fetches the sound data and makes the effects on your Mac.
+- Moves, status effects and stat changes play the game's own animations. The build records them on your Mac. If the Mac cannot run x86_64 programs, they play only their sounds.
 - OPTIONS, then MUSIC opens the music list. AUTO lets the game select the battle music. The 12 other entries are the Emerald battle themes, from VS. WILD POKéMON to VS. RAYQUAZA. The selected track plays in your battles and in the lobby, and the correct victory music plays after a win.
 - The sound of the battle window starts muted. The speaker button in the title bar turns it on.
 
@@ -486,6 +489,7 @@ To change your trainer, open Settings, then Appearance, then Pokemon partners, t
 
 - The app draws each icon as one glyph of its icon font. The extension reads the glyph's codepoint and finds it in a table. On a match, it hides the glyph and draws a mask image in the current text color, so the theme colors apply.
 - A glyph that is not in the table keeps the app's drawing. New icons from an app update stay as they are.
+- The Chat tab's Projects, Quick task, send and surface switch icons, the incognito ghost and the voice mode bars are now pixel art.
 - `settings["pokemon-icons"].motifs` selects the game object stand-ins: the Bag for Customize, the PokeNav for the terminal and the Town Map for the browser. Set it to `false` to get a toolbox, a prompt and a globe.
 - `settings["pokemon-icons"].logos` sets a bitcrush filter for connector and app logos, which are brand images that the extension does not draw again. The values are `"off"`, `"light"`, `"medium"` (the default), `"heavy"` and `"max"`. A higher level uses larger pixels and fewer colors.
 
@@ -503,7 +507,7 @@ The art is in `source/icons/glyphs.mjs` as text grids. `MATCH` connects each cod
 | `node source/sprites/build-sprites.mjs` | `extension-theme/sprites.css` |
 | `python3 source/sprites/item-list.py`, then `node source/sprites/build-items.mjs` | `source/sprites/items.json`, then `extension-theme/items.ts` and the four `items-*.css` files |
 | `node source/icons/build-icons.mjs` | `extension-icons/icons.css` |
-| `sh source/battle/fetch-anims.sh`, then `node source/battle/build-assets.mjs` | The eight `extension-battle/battle-*.css` files. It needs `source/sprites/download-balls.sh` first. `fetch-anims.sh` fetches the ball particles, the move animation scripts, the entrance, throw, ball and particle code, and the tables in `data.c`, `palette.c` and `battle_main.c`. `build-assets.mjs` compiles the recorders with `clang` in `source/battle/tools/monanim/out/` and deletes that folder after the recording. |
+| `sh source/battle/fetch-anims.sh`, then `node source/battle/build-assets.mjs` | The 13 `extension-battle/battle-*.css` files: data, ui, front, back, icons, anim, balls, monanim, moves, moves2, statusanims, movesheets and movebgs. It needs `source/sprites/download-balls.sh` first. `fetch-anims.sh` fetches the ball particles, the move animation scripts, the entrance, throw, ball and particle code, the tables in `data.c`, `palette.c` and `battle_main.c`, and a sparse checkout of the battle animation engine. `build-assets.mjs` compiles the recorders with `clang` in `source/battle/tools/monanim/out/` and `source/battle/tools/battleanim/out/`. It deletes these folders after the recording, and Git ignores them. |
 | `node source/partners/build-assets.mjs` and `build-ui.mjs` | The six `extension-partners/partners-*.css` files |
 | `sh source/audio/download.sh`, then `node source/audio/build-audio.mjs` | The `extension-audio/audio-*.css` files: sound effects, samples, cries and music. `download.sh` fetches the sound data and the game code that sets the sound timings, for example `src/battle_anim_sound_tasks.c` for the battle cries. |
 

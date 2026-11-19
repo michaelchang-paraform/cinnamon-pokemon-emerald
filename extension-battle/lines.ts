@@ -70,6 +70,7 @@ async function handleLine(b: any, line: string): Promise<void> {
       await b.say(`${L(args[0])} used ${moveText(args[1] ?? '')}!`, 250);
       const p = parseIdent(args[0]);
       if (!p || kw.still !== undefined || kw.miss !== undefined || kw.notarget !== undefined) return;
+      if (!b.fast && (await ns.playMoveAnim?.(b, args[1] ?? '', b.key(p.side)))) return;
       const target = parseIdent(args[2]);
       const lead = b.fast ? 0 : b.sound.move(args[1] ?? '', b.key(p.side), target ? b.key(target.side) : null);
       await b.lunge(b.key(p.side));

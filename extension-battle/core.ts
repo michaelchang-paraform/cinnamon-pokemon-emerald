@@ -772,4 +772,12 @@ function effectLine(cmd: string, args: string[], kw: Record<string, string>, L: 
 }
 
 const ns = ((window as any).__pkb = {});
-Object.assign(ns, { peSound, CURSOR_COL, readSound, writeSound, writeBattleSound, SOUND_EVENT, SOUND_KEY, DEFAULT_PORT, START_COMMAND, startCommand, TEXT_MS, HOLD_MS, HP_STEP_MS, BAR, RETRY_MS, NAME_MAX, LAUNCH_ANCHORS, POKEMON, LAUNCH_SELECTOR, NAV_SELECTOR, rt, debugLog, report, timers, later, cancelLater, sleep, cleanups, listen, el, place, clamp, toId, upper, moveText, monText, SVG_NS, pixelArt, CURSOR, CURSOR_DARK, CURSOR_LIGHT, BALL, BALL_PAL, BALL_SMALL, BALL_SMALL_FNT, BALL_SMALL_EMPTY, CLOSE_ART, TINY, tinyText, withAcute, STATUS_COLORS, STATUS_TAGS, cssString, decodeBase64, SoundSettings, Link, savedName, cleanName, Menu, parseLine, parseIdent, parseDetails, parseHp, hpPx, effectName, STAT_NAMES, WEATHER_START, WEATHER_UPKEEP, WEATHER_END, WEATHER_ABILITY, WEATHER_LABEL, TRAPS, damageLine, healLine, statusLine, cantLine, sideLine, effectLine });
+// QA capture hook: parks an animation on the step named in ns.sendOutFreeze so a capture can look at it. It is
+// one-shot (the name clears when it matches) and lets go after a minute, so a stale name can never hold a battle
+async function freezeAt(step: string): Promise<void> {
+  if (!ns.sendOutFreeze || ns.sendOutFreeze !== step) return;
+  ns.sendOutFreeze = undefined;
+  await new Promise((r) => setTimeout(r, 60000));
+}
+
+Object.assign(ns, { freezeAt, peSound, CURSOR_COL, readSound, writeSound, writeBattleSound, SOUND_EVENT, SOUND_KEY, DEFAULT_PORT, START_COMMAND, startCommand, TEXT_MS, HOLD_MS, HP_STEP_MS, BAR, RETRY_MS, NAME_MAX, LAUNCH_ANCHORS, POKEMON, LAUNCH_SELECTOR, NAV_SELECTOR, rt, debugLog, report, timers, later, cancelLater, sleep, cleanups, listen, el, place, clamp, toId, upper, moveText, monText, SVG_NS, pixelArt, CURSOR, CURSOR_DARK, CURSOR_LIGHT, BALL, BALL_PAL, BALL_SMALL, BALL_SMALL_FNT, BALL_SMALL_EMPTY, CLOSE_ART, TINY, tinyText, withAcute, STATUS_COLORS, STATUS_TAGS, cssString, decodeBase64, SoundSettings, Link, savedName, cleanName, Menu, parseLine, parseIdent, parseDetails, parseHp, hpPx, effectName, STAT_NAMES, WEATHER_START, WEATHER_UPKEEP, WEATHER_END, WEATHER_ABILITY, WEATHER_LABEL, TRAPS, damageLine, healLine, statusLine, cantLine, sideLine, effectLine });

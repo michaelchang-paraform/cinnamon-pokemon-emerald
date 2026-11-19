@@ -27,6 +27,12 @@ need python3 "Python 3"
 need pyftsubset "pip install fonttools==4.68.0 brotli==1.2.1 pillow==13.0.0"
 python3 -c "import fontTools, brotli, PIL" || { echo "missing Python packages: pip install fonttools==4.68.0 brotli==1.2.1 pillow==13.0.0" >&2; exit 1; }
 node -e "if (Number(process.versions.node.split('.')[0]) < 18) { console.error('Node.js 18 or later is necessary'); process.exit(1); }"
+# the move animation recorder is an x86_64 macOS program: on Apple Silicon it runs under Rosetta
+if [ "$(uname -s)" != Darwin ] || ! arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+  echo "note: no x86_64 support (on Apple Silicon: softwareupdate --install-rosetta), so the build skips recording the move animations and the moves play their sound-only timelines" >&2
+  BATTLE_SKIP_MOVE_ANIMS=1
+  export BATTLE_SKIP_MOVE_ANIMS
+fi
 
 step "install the helper packages"
 if [ ! -d helper/node_modules/pokemon-showdown ]; then (cd helper && npm ci); fi

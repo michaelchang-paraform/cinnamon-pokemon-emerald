@@ -14,6 +14,8 @@ const FROM_ANIM: Record<string, string> = {
 };
 // -start and -activate effects: confusion and infatuation on infliction and each turn they act
 const ACTIVATE_ANIM: Record<string, string> = { confusion: 's:Confusion', attract: 's:Infatuation', focusband: 'g:FocusBand' };
+// trapping moves with their own TurnTrap animation (Wrap and Bind share the default one)
+const TRAP_VARIANTS = ['firespin', 'whirlpool', 'clamp', 'sandtomb'];
 const WEATHER_ANIM: Record<string, string> = { RainDance: 'g:Rain', SunnyDay: 'g:Sun', Sandstorm: 'g:Sandstorm', Hail: 'g:Hail' };
 
 const audio = () => (window as any).__peAudio;
@@ -132,6 +134,15 @@ class BattleSound {
     if (anim) this.script(anim, key, key === 'me' ? 'foe' : 'me', anim.startsWith('s:'));
   }
 
+  // the general or status animation the page plays for a status, a [from] or -start/-activate effect, or weather
+  animKey(kind: 'status' | 'from' | 'activate' | 'weather', name: string | undefined): string | null {
+    if (kind === 'status') return STATUS_ANIM[name ?? ''] ?? null;
+    if (kind === 'weather') return WEATHER_ANIM[name ?? ''] ?? null;
+    const id = toId(String(name ?? '').replace(/^(move|item|ability):\s*/i, ''));
+    const anim = (kind === 'from' ? FROM_ANIM : ACTIVATE_ANIM)[id];
+    return anim === 'g:TurnTrap' && TRAP_VARIANTS.includes(id) ? `${anim}:${id}` : anim ?? null;
+  }
+
   weather(weather: string, key: Side): void {
     const anim = WEATHER_ANIM[weather];
     if (anim) this.script(anim, key, key);
@@ -140,6 +151,12 @@ class BattleSound {
   // a send-out or faint cry, a little to the mon's side (25 of 64)
   cry(dex: number, key: Side, mode: 'normal' | 'weak' | 'faint'): void {
     this.cryAt(dex, (key === 'me' ? -25 : 25) / 64, mode);
+  }
+
+  // a move's own cry from the attacker, in the mode and at the pan its animation recorded
+  cryOf(key: Side, mode: string, pan: number): void {
+    const dex = this.dexOf(key);
+    if (dex) this.cryAt(dex, pan, mode);
   }
 
   // a cry in one of the audio extension's modes: normal, weak, faint, and from move scripts high_pitch, growl,

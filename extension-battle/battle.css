@@ -64,7 +64,8 @@
 .pkb-sendout-ball,
 .pkb-sendout-mon,
 .pkb-sendout-sparks,
-.pkb-monanim {
+.pkb-monanim,
+.pkb-moveanim {
   pointer-events: none;
 }
 

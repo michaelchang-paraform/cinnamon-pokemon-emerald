@@ -1297,6 +1297,68 @@ export const ART = {
 .#.#.#.#.
 .#.....#.
 ..#####..`),
+  projects: a(`
+...#####...
+...........
+..#######..
+...........
+###########
+#.........#
+#.........#
+.#.......#.
+.#.......#.
+..#######..`),
+  'quick-task': a(`
+.########..
+#........#.
+#........#.
+#........#.
+#........#.
+#.....#####
+#.....#...#
+.####.#####`),
+  bubble: a(`
+..#####..
+.#.....#.
+#.......#
+#.......#
+#.......#
+#.......#
+.#.....#.
+.#.####..
+##.......`),
+  'arrow-up': a(`
+....#....
+...###...
+..#.#.#..
+.#..#..#.
+#...#...#
+....#....
+....#....
+....#....
+....#....`),
+  ghost: a(`
+...#####...
+..#.....#..
+.#.......#.
+.#.......#.
+.#..#.#..#.
+.#.......#.
+.#.......#.
+.#.......#.
+.#.......#.
+.#..#.#..#.
+..##.#.##..`),
+  waveform: a(`
+.....#.....
+.....#.....
+...#.#.#...
+...#.#.#...
+.#.#.#.#.#.
+...#.#.#...
+...#.#.#...
+.....#.....
+.....#.....`),
 };
 
 // codepoint (hex, Anthropicons-Variable private use) to art; small is the compact art for a box the regular art does not fit:
@@ -1311,6 +1373,7 @@ export const MATCH = {
   e00f: { art: 'enter', group: 'glyph' },
   e010: { art: 'arrow-right', small: 'arrow-right-s', group: 'glyph' },
   e012: { art: 'fork', small: 'fork-s', group: 'glyph' },
+  e013: { art: 'arrow-up', group: 'glyph' },
   e014: { art: 'upgrade', group: 'glyph' },
   e015: { art: 'arrow-up-right', small: 'arrow-up-right-s', group: 'glyph' },
   e017: { art: 'artifacts', group: 'object' },
@@ -1321,6 +1384,7 @@ export const MATCH = {
   e02a: { art: 'chevron-right', group: 'glyph' },
   e02d: { art: 'diff', group: 'object' },
   e02f: { art: 'chart', group: 'object' },
+  e037: { art: 'bubble', group: 'object' },
   e039: { art: 'chats', group: 'object' },
   e03b: { art: 'check', group: 'glyph' },
   e03d: { art: 'check-circle', small: 'status-done', group: 'status' },
@@ -1365,6 +1429,7 @@ export const MATCH = {
   e0c0: { art: 'pending', small: 'pending-s', group: 'status' },
   e0c1: { art: 'play', group: 'glyph' },
   e0c5: { art: 'plug', group: 'object' },
+  e0c9: { art: 'projects', group: 'object' },
   e0d2: { art: 'scroll', group: 'object' },
   e0d3: { art: 'search', small: 'search-s', group: 'glyph' },
   e0d6: { art: 'gear', group: 'object' },
@@ -1388,6 +1453,7 @@ export const MATCH = {
   e11c: { art: 'tasks', group: 'object' },
   e11d: { art: 'refresh', group: 'glyph' },
   e11e: { art: 'undo', group: 'glyph' },
+  e120: { art: 'quick-task', group: 'object' },
   e130: { art: 'gauge', group: 'status' },
   e181: { art: 'comment', group: 'object' },
   // the app shows a selected state as the next codepoint, a filled twin of the outline glyph
@@ -1412,6 +1478,9 @@ export const UNMAPPED = ['hand'];
 
 // label menu rows of Cinnamon's built-in sidebar-cards extension: plain text rows, keyed by data-label, drawn by CSS alone
 export const STATUS = { todo: 'status-todo', doing: 'status-doing', done: 'status-done', clear: 'status-clear' };
+
+// buttons the app draws with an inline svg, not a font glyph: keyed by the button's aria-label, drawn by CSS alone
+export const SVG_BUTTONS = { 'Use incognito': 'ghost', 'Use voice mode': 'waveform' };
 
 // real pokeemerald graphics cut at build time: [file under graphics/, x, y, w, h]
 export const ASSETS = {
